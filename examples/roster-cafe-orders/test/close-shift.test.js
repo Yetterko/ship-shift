@@ -15,5 +15,5 @@ test('a daytime shift is counted as before', () => {
 });
 
 test('a close is paid for its real hours', () => {
-  assert.equal(shiftPay({ date: '2026-11-19', start: '16:00', end: '00:30' }, { rate: 29 }), 246.5);
+  assert.equal(shiftPay({ date: '2026-11-19', start: '18:00', end: '00:30' }, { rate: 30 }), 195);
 });

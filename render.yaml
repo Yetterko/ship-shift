@@ -12,6 +12,22 @@ services:
     envVars:
       - key: SHIP_PUBLIC
         value: "1"
+      # The town is not finished, so this deploy goes out with it off: private kitchens only.
+      - key: SHIP_WORLD
+        value: "0"
+      # API chefs (Claude Haiku through the Messages API) when ANTHROPIC_API_KEY is set in the dashboard. Without a key the
+      # chefs are simulated. The key is never put in this file.
+      - key: SHIP_PUBLIC_API
+        value: "1"
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # Hard caps on real spend, in dollars: the whole server, one kitchen, one order.
+      - key: SHIP_BUDGET_USD
+        value: "100"
+      - key: SHIP_KITCHEN_BUDGET_USD
+        value: "1.50"
+      - key: SHIP_ORDER_BUDGET_USD
+        value: "0.40"
       # A free instance has 512 MB and a slice of a CPU, so it holds fewer kitchens than a laptop.
       - key: SHIP_MAX_SESSIONS
         value: "10"

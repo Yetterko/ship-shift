@@ -1,3 +1,5 @@
 node_modules/
 .kitchen/
 demo-repo/
+qr/
+test/shots-park/

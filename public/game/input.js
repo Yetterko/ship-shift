@@ -1,14 +1,17 @@
 // Keys, pointer, walking with collision, and what E does at each station.
-import { $, G, orderOf, questionFor, api, toast, emit, nowS, clamp } from './core.js';
-import { THREE, V, scene, camera, renderer, popup, shake, spawn } from './scene.js';
+import { $, G, orderOf, questionFor, api, toast, emit, nowS, clamp, modal, quiet, can, whyNot } from './core.js';
+import { THREE, V, scene, camera, renderer, popup, shake, spawn, isSide } from './scene.js';
 import { player, stations, stationById, chefStations, passStations, hatchSt, prepSt, stationState, setCarry, local, slotOf, passSlotOf, blocked, findPath, PLAYER_R, ring, targetDot, arrow, urgentRing, dust, sprinkle, kick, chefChar, plateLook, JARS, orderStation, stateWords } from './world.js';
-import { ui, answerKey, openInput, closeInput, openReview, closeReview, reviewKey, diffSeen } from './panels.js';
+import { ui, answerKey, openInput, closeInput, openReview, closeReview, reviewKey, diffSeen, setBoard } from './panels.js';
 
 const keys = {};
 const KEYMAP = { KeyW: 'up', ArrowUp: 'up', KeyS: 'down', ArrowDown: 'down', KeyA: 'left', ArrowLeft: 'left', KeyD: 'right', ArrowRight: 'right' };
-const dialogOpen = () => !!document.querySelector('dialog[open]');
+const dialogOpen = modal;
 const typing = () => /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName);
-export const state = { near: null, urgentUntil: 0, urgent: null };
+/** guide is the station the walkthrough is pointing at, set by guide.js. */
+export const state = { near: null, urgentUntil: 0, urgent: null, guide: null };
+/** The park has its own gestures. While park is set, taps go to tap(clientX, clientY) and keys to key(event); town.js fills these in. */
+export const mode = { park: false, tap: null, key: null };
 
 /* ======================= what E does ======================= */
 export async function interact(st, { arriving = false } = {}) {
@@ -16,6 +19,31 @@ export async function interact(st, { arriving = false } = {}) {
   const c = player.carry;
   const full = () => toast('Hands full. Q puts it back', 'bad');
   try {
+    if (st.type === 'door') {
+      // a waiting ticket carried to the door is a bounce: the customer goes back to the team's backlog in the park
+      if (c?.type === 'ticket' && !G.visit) {
+        const id = c.id; setCarry(null); emit('sfx', 'drop'); spawn('puff', st.top, '#fffaf0', { n: 6, spread: 0.4, up: 1.1 });
+        await api(`/api/orders/${id}/bounce`);
+        popup('Back to the park', st.top, 'good');
+        return;
+      }
+      if (c) return full();
+      emit('door'); return;
+    }
+    if (G.visit) {
+      // somebody else's kitchen: a teammate may review at the pass, the bubble takes the answers, and the rest is the owner's
+      if (st.type === 'chef' && stationState(st).question) return;
+      if (st.type === 'pass') {
+        const { order: o } = stationState(st);
+        if (!o) return;
+        if (!can('approve')) return toast(whyNot('approve'), 'bad');
+        if (o.approved) return toast(`Approved. Only ${G.visit.owner} carries it to the hatch`);
+        if (ui.review !== o.id) openReview(o.id);
+        return;
+      }
+      toast(whyNot('own'));
+      return;
+    }
     if (st.type === 'slot') {
       const { order: o } = stationState(st);
       if (!o) return;
@@ -33,7 +61,9 @@ export async function interact(st, { arriving = false } = {}) {
       if (c?.type === 'ticket') {
         if (chef.orderId) return toast(`${chef.name} is busy with #${chef.orderId}`, 'bad');
         const id = c.id; setCarry(null); emit('sfx', 'drop'); kick(st, 0.3); const ch = chefChar(chef.id); if (ch) kick(ch, 0.35);
-        await api(`/api/orders/${id}/assign`, { chefId: chef.id });
+        // git can be busy for a moment (another plate being committed): try once more before telling the player
+        try { await api(`/api/orders/${id}/assign`, { chefId: chef.id }, { quiet: true }); }
+        catch { await new Promise(r => setTimeout(r, 900)); await api(`/api/orders/${id}/assign`, { chefId: chef.id }); }
         return;
       }
       if (o?.state === 'cooking') {
@@ -109,7 +139,7 @@ function putDown() {
 
 /* ======================= triage: Tab walks you to the most urgent thing ======================= */
 export function urgent() {
-  const S = G.S; if (!S) return null;
+  const S = G.S; if (!S || G.visit) return null;
   const c = player.carry;
   const qs = [...S.questions].sort((a, b) => a.createdAt - b.createdAt);
   for (const q of qs) { const st = chefStations.find(s => s.chefId === q.chefId); if (st) return { st, why: 'blocked' }; }
@@ -133,16 +163,24 @@ function triage() {
 }
 
 /* ======================= keys ======================= */
-addEventListener('keydown', e => {
-  if (e.code === 'Tab' && !dialogOpen()) { e.preventDefault(); if (!typing() && !e.repeat) triage(); return; }
+function handleKey(e) {
+  if (e.code === 'Tab' && !dialogOpen()) { e.preventDefault(); if (!typing() && !e.repeat && !mode.park) triage(); return; }
   if (dialogOpen() || typing() || e.ctrlKey || e.metaKey || e.altKey) return;
-  if (e.code === 'Escape') { if (reviewKey(e)) return; ui.taste = null; $('shiftPop').hidden = true; return; }
-  if (KEYMAP[e.code]) { keys[KEYMAP[e.code]] = true; e.preventDefault(); player.path = null; player.targetSt = null; return; }
+  if (mode.park && e.code === 'Escape') { if (ui.board) setBoard(false); else mode.key?.(e); return; }
+  if (e.code === 'Escape') { if (reviewKey(e)) return; if (ui.board) return setBoard(false); ui.taste = null; $('shiftPop').hidden = true; return; }
+  if (e.code === 'KeyL') { if (!e.repeat) setBoard(!ui.board); return; }
+  if (e.key === '?' || e.code === 'KeyH') { if (!e.repeat) emit('help'); return; }
+  if (e.code === 'KeyP') { if (!e.repeat) emit('presenter'); return; }
+  if (e.code === 'KeyM') { if (!e.repeat) emit('mute'); return; }
+  if (e.code === 'Backquote') { if (!e.repeat) emit('debug'); return; }
+  if (KEYMAP[e.code]) { keys[KEYMAP[e.code]] = true; e.preventDefault(); player.path = null; player.targetSt = null; if (mode.park) mode.key?.(e); return; }
   if (e.repeat) return;
+  if (mode.park) { mode.key?.(e); return; }
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { dash(); return; }
   if (reviewKey(e)) { e.preventDefault(); return; }
   const near = state.near;
   const q = near?.type === 'chef' ? questionFor(near.chefId) : null;
+  if (q && !can('answer')) { if (/^(Digit|Numpad)[1-4]$|^Key[XT]$/.test(e.code)) toast(whyNot('answer'), 'bad'); return; }
   if (q) {
     const digit = /^(Digit|Numpad)([1-4])$/.exec(e.code)?.[2];
     if (digit) { e.preventDefault(); answerKey(q, digit); return; }
@@ -151,23 +189,35 @@ addEventListener('keydown', e => {
   }
   if (e.code === 'KeyE' || e.code === 'Space') { e.preventDefault(); if (near) interact(near); return; }
   if (e.code === 'KeyQ') { putDown(); return; }
+  if (G.visit && e.code !== 'KeyR') return;
   if (e.code === 'KeyF' && near?.type === 'chef') {
     const { order: o, chef } = stationState(near);
     if (o?.state === 'cooking' && !q) { e.preventDefault(); openInput('steer', o.id, `Call out to ${chef.name}: one line, then Enter`); }
     return;
   }
-  if (e.code === 'KeyR' && near?.type === 'pass') { const { order: o } = stationState(near); if (o && !player.carry) openReview(o.id); return; }
+  if (e.code === 'KeyR' && near?.type === 'pass') { if (!can('approve')) return toast(whyNot('approve'), 'bad'); const { order: o } = stationState(near); if (o && !player.carry) openReview(o.id); return; }
   if (e.code === 'KeyX' && near?.type === 'chef') {
     const { order: o } = stationState(near);
     if (o?.state !== 'stalled') return;
     if (ui.binChef !== o.id) { ui.binChef = o.id; emit('sfx', 'no'); return; }
     ui.binChef = null; api(`/api/orders/${o.id}/bin`).catch(() => {});
   }
+}
+addEventListener('keydown', handleKey);
+/** Every key hint on screen is also a button, so a trackpad or a touch screen can do anything the keyboard can. */
+const CODES = { L: 'KeyL', E: 'KeyE', Q: 'KeyQ', F: 'KeyF', R: 'KeyR', X: 'KeyX', T: 'KeyT', J: 'KeyJ', K: 'KeyK', B: 'KeyB', P: 'KeyP', M: 'KeyM', Tab: 'Tab', Shift: 'ShiftLeft', Enter: 'Enter', Esc: 'Escape', '?': 'Slash', 1: 'Digit1', 2: 'Digit2', 3: 'Digit3', 4: 'Digit4' };
+export function press(name) {
+  const code = CODES[name]; if (!code) return;
+  handleKey({ code, key: name, repeat: false, preventDefault() {} });
+}
+document.addEventListener('click', e => {
+  const k = e.target.closest?.('[data-k]'); if (!k || k.closest('.overlay')) return;
+  e.preventDefault(); press(k.dataset.k);
 });
 addEventListener('keyup', e => { if (KEYMAP[e.code]) keys[KEYMAP[e.code]] = false; });
 addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
 
-function dash() {
+export function dash() {
   if (player.dashCool > 0) return;
   player.dash = 0.25; player.dashCool = 0.7;
   kick(player, -0.3); dust(7); emit('sfx', 'dash');
@@ -175,11 +225,41 @@ function dash() {
 
 /* ======================= pointer ======================= */
 const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2();
-renderer.domElement.addEventListener('pointerdown', e => {
+/** The thumb stick: a finger that drags anywhere on the kitchen. x is screen-right, y is screen-down, each -1 to 1. */
+export const stick = { id: null, x: 0, y: 0, ox: 0, oy: 0, kx: 0, ky: 0, used: false };
+const STICK_R = 52, fingers = new Map();
+const canvas = renderer.domElement;
+canvas.addEventListener('pointerdown', e => {
   if (dialogOpen()) return;
   $('shiftPop').hidden = true;
-  const r = renderer.domElement.getBoundingClientRect();
-  pointer.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur?.();
+  if (e.pointerType === 'mouse') return pickAt(e.clientX, e.clientY);
+  // a finger: a quick tap walks there and uses it, a drag is the stick. Other fingers stay free for the buttons.
+  fingers.set(e.pointerId, { x: e.clientX, y: e.clientY, t: performance.now() });
+  try { canvas.setPointerCapture(e.pointerId); } catch { /* already gone */ }
+});
+canvas.addEventListener('pointermove', e => {
+  const f = fingers.get(e.pointerId); if (!f) return;
+  if (stick.id === null && Math.hypot(e.clientX - f.x, e.clientY - f.y) > 12) { stick.id = e.pointerId; stick.ox = f.x; stick.oy = f.y; stick.used = true; player.path = null; player.targetSt = null; }
+  if (stick.id !== e.pointerId) return;
+  let dx = e.clientX - stick.ox, dy = e.clientY - stick.oy, d = Math.hypot(dx, dy);
+  if (d > STICK_R) { stick.ox += dx * (1 - STICK_R / d); stick.oy += dy * (1 - STICK_R / d); dx *= STICK_R / d; dy *= STICK_R / d; d = STICK_R; }   // the base follows a thumb that wanders
+  stick.kx = dx; stick.ky = dy;
+  const k = d < 9 ? 0 : Math.min(1, (d - 9) / (STICK_R * 0.6)) / (d || 1);
+  stick.x = dx * k; stick.y = dy * k;
+});
+const lift = e => {
+  const f = fingers.get(e.pointerId); if (!f) return;
+  fingers.delete(e.pointerId);
+  if (stick.id === e.pointerId) { stick.id = null; stick.x = stick.y = stick.kx = stick.ky = 0; return; }
+  if (e.type === 'pointerup' && performance.now() - f.t < 600 && !dialogOpen()) pickAt(f.x, f.y);
+};
+canvas.addEventListener('pointerup', lift);
+canvas.addEventListener('pointercancel', lift);
+function pickAt(cx, cy) {
+  if (mode.park) return mode.tap?.(cx, cy);
+  const r = canvas.getBoundingClientRect();
+  pointer.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
   raycaster.setFromCamera(pointer, camera);
   const pick = [];
   scene.traverse(o => { if (o.isMesh && (o.userData.station || o.userData.floor || o.userData.chefOf || o.userData.customerOf)) pick.push(o); });
@@ -190,11 +270,11 @@ renderer.domElement.addEventListener('pointerdown', e => {
   if (!st && hit.object.userData.customerOf && slotOf.has(hit.object.userData.customerOf)) st = stationById(`slot${slotOf.get(hit.object.userData.customerOf)}`);
   if (st) walkTo(st);
   else walkPoint(hit.point.x, hit.point.z);
-});
-$('labels').addEventListener('click', e => {
-  const k = e.target.closest('[data-key]');
+}
+document.addEventListener('click', e => {
+  const k = e.target.closest?.('[data-key]');
   if (k) { const q = state.near?.type === 'chef' ? questionFor(state.near.chefId) : null; if (q) answerKey(q, k.dataset.key); return; }
-  const el = e.target.closest('[data-goto]'); if (!el) return;
+  const el = e.target.closest('[data-goto]'); if (!el || mode.park) return;
   const st = stationById(el.dataset.goto); if (st) walkTo(st);
 });
 
@@ -226,12 +306,19 @@ function nearest() {
 }
 
 /* ======================= every frame ======================= */
-const SPEED = 6.2;
+export const SPEED = 6.2;
 let stepT = 0;
+/** Which way the keys or the thumb stick point, in screen terms: x to the right, z down the screen, and how hard (0 to 1). */
+export function moveVector() {
+  let x = (keys.right ? 1 : 0) - (keys.left ? 1 : 0), z = (keys.down ? 1 : 0) - (keys.up ? 1 : 0), mag = 1;
+  if (stick.id !== null) { x = stick.x; z = stick.y; mag = Math.min(1, Math.hypot(x, z)); }
+  if (dialogOpen() || typing()) x = z = 0;
+  return { x, z, mag };
+}
 export function step(dt, t) {
   const pos = player.g.position;
-  let mx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0), mz = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
-  if (dialogOpen() || typing()) mx = mz = 0;
+  let { x: mx, z: mz, mag } = moveVector();
+  if (isSide()) [mx, mz] = [-mz, mx];          // the street-end camera: up the screen is along the room
   player.dash = Math.max(0, player.dash - dt); player.dashCool = Math.max(0, player.dashCool - dt);
   const speed = SPEED * (player.dash > 0 ? 1.8 : 1);
   let arrived = null;
@@ -246,7 +333,7 @@ export function step(dt, t) {
   }
   // velocity eases in and out, then moves on each axis alone so walls slide instead of stick
   const k = Math.min(1, dt * 20);
-  player.vx += (mx * speed - player.vx) * k; player.vz += (mz * speed - player.vz) * k;
+  player.vx += (mx * speed * mag - player.vx) * k; player.vz += (mz * speed * mag - player.vz) * k;
   if (!mx && !mz && Math.hypot(player.vx, player.vz) < 0.4) player.vx = player.vz = 0;
   const n = Math.max(1, Math.ceil(dt / 0.016));
   for (let i = 0; i < n; i++) {
@@ -279,10 +366,12 @@ export function step(dt, t) {
 
   // the red arrow: on Tab for a few seconds, and always while something is on fire
   const u = G.S ? urgent() : null;
-  const fire = u?.why === 'blocked' && G.S.shift.mode !== 'focus' && G.S.questions.some(q => nowS() - q.createdAt >= (G.S.escalation?.fireMs ?? 60000 / (G.S.pace || 1)));
-  const target = performance.now() < state.urgentUntil ? state.urgent : fire ? u.st : null;
+  const fire = u?.why === 'blocked' && !quiet() && G.S.questions.some(q => nowS() - q.createdAt >= (G.S.escalation?.fireMs ?? 60000 / (G.S.pace || 1)));
+  const trouble = performance.now() < state.urgentUntil ? state.urgent : fire ? u.st : null;
+  const target = trouble || state.guide;
   const show = !!target && target !== near;
-  arrow.visible = urgentRing.visible = show;
+  arrow.visible = show; urgentRing.visible = show && !!trouble;
+  arrow.material.color.set(trouble ? '#ff5a3c' : '#ffd23f');
   if (show) {
     const a = target.ring, dx = a.x - pos.x, dz = a.z - pos.z, d = Math.hypot(dx, dz) || 1;
     arrow.position.set(pos.x + dx / d * (0.95 + Math.sin(t * 8) * 0.1), 0.03, pos.z + dz / d * (0.95 + Math.sin(t * 8) * 0.1));

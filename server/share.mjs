@@ -1,6 +1,7 @@
 // `npm run share`: public mode on this laptop, behind a free Cloudflare quick tunnel, with the link and a QR code printed.
 // `npm run share -- --lan` skips the tunnel and shares on the local network only.
 import { spawn, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,6 +16,9 @@ const LAN_ONLY = args.includes('--lan');
 const local = `http://localhost:${PORT}`;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const children = [];
+// The presenter's reset token. It is printed here, in the presenter's terminal, and never sent to a player.
+const TOWN = process.env.SHIP_WORLD !== '0';
+const RESET_TOKEN = String(process.env.SHIP_RESET_TOKEN || '').length >= 8 ? process.env.SHIP_RESET_TOKEN : crypto.randomBytes(9).toString('base64url');
 
 const INSTALL = `cloudflared is not installed, so there is no public link yet. Install it with one line, then run \`npm run share\` again:
 
@@ -32,13 +36,20 @@ function findCloudflared() {
   return candidates.find(c => (c === 'cloudflared' || fs.existsSync(c)) && spawnSync(c, ['--version'], { windowsHide: true }).status === 0) || null;
 }
 
+/** This machine's addresses, the likeliest Wi-Fi or Ethernet one first and virtual adapters last. */
 function lanUrls() {
-  return Object.values(os.networkInterfaces()).flat()
-    .filter(n => n && n.family === 'IPv4' && !n.internal && !n.address.startsWith('169.254.'))
-    .map(n => `http://${n.address}:${PORT}`);
+  const rank = ([name, n]) => (/virtual|vmware|vethernet|wsl|docker|tailscale|hyper-v|loopback|vbox|utun|tun|tap/i.test(name) || n.address.endsWith('.1') ? 10 : 0)
+    + (/^192\.168\./.test(n.address) ? 0 : /^10\./.test(n.address) ? 1 : /^172\.(1[6-9]|2\d|3[01])\./.test(n.address) ? 2 : 5);
+  return Object.entries(os.networkInterfaces()).flatMap(([name, list]) => (list || []).map(n => [name, n]))
+    .filter(([, n]) => n.family === 'IPv4' && !n.internal && !n.address.startsWith('169.254.'))
+    .sort((a, b) => rank(a) - rank(b))
+    .map(([, n]) => `http://${n.address}:${PORT}`);
 }
 
+let stopping = false;
 function stop(code = 0) {
+  if (stopping) return;
+  stopping = true;
   for (const c of children) if (c.exitCode === null) c.kill();
   // Give the kitchen a moment to delete its visitors' repos.
   setTimeout(() => process.exit(code), 1500);
@@ -50,16 +61,21 @@ function announce(url, how) {
   console.log(`\n  Ship Shift is shared ${how}:\n\n      ${url}\n`);
   qrcode.generate(url, { small: true }, code => console.log(code.split('\n').map(l => '      ' + l).join('\n')));
   console.log('\n  Everyone who opens the link gets a private kitchen with simulated chefs. Nothing here can run a real agent.');
+  if (TOWN) {
+    console.log('  Everyone shares one town. To start the next demo from a clean slate, run `npm run reset` in another terminal,');
+    console.log(`  or open "Reset town" in the page and type the presenter's token:  ${RESET_TOKEN}`);
+    console.log('  Keep the token to yourself: it is shown here and nowhere else.\n');
+  }
   console.log('  Leave this running while people play. Ctrl+C stops sharing.\n');
 }
 
 async function startKitchen() {
   const kitchen = spawn(process.execPath, [path.join(root, 'server', 'index.mjs'), '--public'], {
-    cwd: root, env: { ...process.env, PORT: String(PORT), SHIP_PUBLIC: '1' }, stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true,
+    cwd: root, env: { ...process.env, PORT: String(PORT), SHIP_PUBLIC: '1', SHIP_RESET_TOKEN: RESET_TOKEN }, stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true,
   });
   children.push(kitchen);
   let gone = false;
-  kitchen.on('exit', code => { gone = true; if (code) console.error(`The kitchen stopped (exit ${code}). Is port ${PORT} already in use? Try \`npm run share -- --port 4620\`.`); stop(code || 0); });
+  kitchen.on('exit', code => { gone = true; if (code && !stopping) console.error(`The kitchen stopped (exit ${code}). Is port ${PORT} already in use? Try \`npm run share -- --port 4620\`.`); stop(code || 0); });
   for (let i = 0; i < 100 && !gone; i++) {
     try { if ((await fetch(`${local}/healthz`)).ok) return; } catch { /* not up yet */ }
     await sleep(150);
@@ -85,6 +101,7 @@ function openTunnel(bin) {
     tunnel.stdout.on('data', read); tunnel.stderr.on('data', read);
     tunnel.on('error', reject);
     tunnel.on('exit', code => {
+      if (stopping) return;
       if (!done) return reject(new Error(`cloudflared stopped before the tunnel opened (exit ${code}).\n${log.trim().split('\n').slice(-8).join('\n')}`));
       console.error('The tunnel closed, so the link no longer works.'); stop(1);
     });

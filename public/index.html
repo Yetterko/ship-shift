@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#1c1420">
 <title>Ship Shift</title>
 <link rel="stylesheet" href="/game.css">
 <script type="importmap">{ "imports": { "three": "/vendor/three.module.js", "three/addons/": "/vendor/addons/" } }</script>
@@ -12,20 +15,28 @@
   <div class="vignette"></div>
   <div class="labels" id="labels"></div>
   <div class="pops" id="pops"></div>
+  <div class="banners" id="banners" aria-live="polite"></div>
 
   <header class="hud">
     <div class="brand">SHIP<span>SHIFT</span></div>
     <button class="pill clock" id="clockBtn" type="button" title="Shift settings"><small id="shiftMode">Start a shift</small><b id="shiftClock">25:00</b></button>
+    <div class="quest" id="quest" hidden>
+      <ol id="questSteps" aria-label="Your first ticket"></ol>
+      <button class="skip" id="questSkip" type="button" title="Skip the walkthrough">Skip</button>
+    </div>
     <div class="pill score" id="scoreBox" title="Score and streak"><span class="star" data-icon="star"></span><b id="mScore">0</b><i id="mStreak">×1.0</i></div>
     <div class="meters">
       <span class="m" id="mBlockedBox" title="Time your chefs have spent waiting on you"><span data-icon="wait"></span><b id="mBlocked">0:00</b></span>
       <span class="m" title="Shipped to main"><span data-icon="plate"></span><b id="mShipped">0</b></span>
-      <span class="m" title="Spend"><span data-icon="coin"></span><b id="mSpend">$0.00</b></span>
+      <span class="m spend" title="Spend"><span data-icon="coin"></span><b id="mSpend">$0.00</b></span>
     </div>
-    <div class="tools">
-      <button class="rb" id="newOrderBtn" type="button" title="New order" aria-label="New order" data-icon="plus"></button>
-      <button class="rb" id="soundBtn" type="button" title="Sound" aria-label="Sound" aria-pressed="true" data-icon="sound"></button>
-      <a class="rb" href="/board.html" title="List view" aria-label="List view" data-icon="list"></a>
+    <button class="rb" id="menuBtn" type="button" title="Menu" aria-label="Menu" aria-expanded="false" data-icon="list"></button>
+    <div class="tools" id="tools">
+      <button class="rb" id="newOrderBtn" type="button" title="New order" aria-label="New order"><span data-icon="plus"></span><em>New order</em></button>
+      <button class="rb" id="soundBtn" type="button" title="Sound (M)" aria-label="Sound" aria-pressed="true"><span id="soundIcon" data-icon="sound"></span><em>Sound</em></button>
+      <button class="rb" id="helpBtn" type="button" title="How it works (?)" aria-label="How it works"><span data-icon="help"></span><em>How it works</em></button>
+      <button class="rb" id="presentBtn" type="button" title="Presenter mode (P)" aria-label="Presenter mode"><span data-icon="screen"></span><em>Presenter mode</em></button>
+      <button class="rb" id="boardBtn" type="button" title="The board: every order (L)" aria-label="The board" aria-pressed="false"><span data-icon="board"></span><em>The board</em></button>
     </div>
   </header>
   <div class="popover" id="shiftPop" hidden>
@@ -44,12 +55,14 @@
       <div><small id="rEyebrow"></small><h2 id="rTitle"></h2></div>
       <button class="rb" id="rClose" type="button" title="Close (Esc)" aria-label="Close">×</button>
     </div>
+    <p class="review-guide" id="rGuide" hidden>This is the real git diff from the chef's branch. <span class="for-keys">Read it with <kbd>J</kbd> and <kbd>K</kbd>, then press <kbd>Enter</kbd> to approve.</span><span class="for-touch">Read it with Next, then tap Approve.</span></p>
+    <p class="review-guide cold" id="rColdNote" hidden>This plate went cold: main changed the same lines after the chef finished. Send it back and the chef merges main. Shipped as it is, it would conflict.</p>
     <div class="review-meta" id="rMeta"></div>
     <details id="rSummaryBox"><summary>Chef's summary</summary><pre id="rSummary" class="prose"></pre></details>
     <details id="rTestsBox"><summary id="rTestsLabel">Tests</summary><pre id="rTests" class="out"></pre></details>
     <div class="diff" id="rDiff" tabindex="-1"></div>
     <div class="review-foot">
-      <div class="hints"><span class="k"><kbd>J</kbd><kbd>K</kbd>next / previous hunk</span><span class="seenpill" id="rSeen"></span></div>
+      <div class="hints"><span class="pair"><span class="k" data-k="K" role="button"><kbd>K</kbd><em>Previous</em></span><span class="k" data-k="J" role="button"><kbd>J</kbd><em>Next change</em></span></span><span class="seenpill" id="rSeen"></span></div>
       <textarea id="rComment" rows="2" placeholder="B: write what to fix, then Enter sends it back"></textarea>
       <div class="row">
         <button class="btn ship" id="rApprove" type="button"><kbd>Enter</kbd> Approve</button>
@@ -60,7 +73,75 @@
     </div>
   </aside>
 
+  <!-- the town: who you are visiting, and the wipe between a kitchen and the park -->
+  <div class="visit" id="visitBanner" hidden>
+    <span class="visit-who"><b id="visitText"></b><i id="visitCan"></i></span>
+    <button class="btn small" id="visitCheer" type="button" hidden>Cheer</button>
+    <button class="btn small ghost" id="visitLeave" type="button">Leave</button>
+  </div>
+  <div class="iris" id="iris" aria-hidden="true"></div>
+
+  <aside class="board" id="board" aria-label="The board: every order and its actions"></aside>
+  <div class="qsheet" id="qsheet" hidden></div>
+
+  <!-- touch: a thumb stick wherever a finger drags, and the keys as buttons -->
+  <div class="stickhint" id="stickHint"><i></i><span>drag to walk</span></div>
+  <div class="thumb" id="thumb" hidden><i id="thumbKnob"></i></div>
+  <div class="pad" id="pad">
+    <button class="tb ctx" id="tCall" type="button" data-tk="F" hidden><span data-icon="q"></span><em>Call out</em></button>
+    <button class="tb ctx" id="tDrop" type="button" data-tk="Q" hidden><em>Put<br>down</em></button>
+    <button class="tb" id="tUrgent" type="button" data-tk="Tab" aria-label="Go to the most urgent thing"><span data-icon="flame"></span><em>Urgent</em></button>
+    <button class="tb" id="tDash" type="button" data-tk="Shift"><em>Dash</em></button>
+    <button class="tb act" id="tAct" type="button" data-tk="E"><b>USE</b><small id="tActHint"></small></button>
+  </div>
+
   <div class="toasts" id="toasts" aria-live="polite"></div>
+  <div class="perf" id="perf" hidden></div>
+</div>
+
+<!-- The start screen. The kitchen is already running behind it. -->
+<div class="overlay open" id="title" role="dialog" aria-modal="true" aria-labelledby="titleName">
+  <div class="title-card">
+    <h1 id="titleName">SHIP<span>SHIFT</span></h1>
+    <p class="tag">Run a line of Claude coding agents like a kitchen.</p>
+    <ol class="loop">
+      <li><span class="ico" data-icon="ticket"></span><b>Take</b><small>a ticket is a task</small></li>
+      <li><span class="ico" data-icon="hat"></span><b>Give</b><small>a chef is an agent</small></li>
+      <li><span class="ico" data-icon="q"></span><b>Answer</b><small>when one gets stuck</small></li>
+      <li><span class="ico" data-icon="eye"></span><b>Review</b><small>the real diff</small></li>
+      <li><span class="ico" data-icon="rocket"></span><b>Ship</b><small>merge it to main</small></li>
+    </ol>
+    <button class="btn big" id="titleStart" type="button"><kbd class="for-keys">Enter</kbd> <span id="titleGo">Open the kitchen</span></button>
+    <label class="check"><input type="checkbox" id="titleGuide" checked> Walk me through my first ticket</label>
+    <p class="mode" id="titleMode">&nbsp;</p>
+    <p class="keysline for-keys"><b>WASD</b> or click to walk · <b>E</b> to use · <b>?</b> help · <b>P</b> presenter mode</p>
+    <p class="keysline for-touch"><b>Drag</b> to walk · <b>tap</b> anything to use it · the menu has help</p>
+  </div>
+</div>
+
+<div class="overlay" id="help" role="dialog" aria-modal="true" aria-labelledby="helpName">
+  <div class="help-card">
+    <div class="help-head">
+      <h2 id="helpName">How the kitchen works</h2>
+      <button class="rb" id="helpClose" type="button" title="Close (Esc)" aria-label="Close">×</button>
+    </div>
+    <div class="help-cols">
+      <section><h3>Controls</h3><dl class="keylist" id="helpKeys"></dl></section>
+      <section><h3>What each station really does</h3><dl class="reallist" id="helpReal"></dl></section>
+    </div>
+    <div class="help-foot">
+      <span id="helpMode"></span>
+      <span class="row"><button class="btn ghost" id="helpGuide" type="button">Replay the walkthrough</button><button class="btn ghost" id="helpPresent" type="button">Presenter mode</button><button class="btn" id="helpDone" type="button"><kbd>Esc</kbd> Back to the kitchen</button></span>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="gone" role="alertdialog" aria-modal="true" aria-labelledby="goneName">
+  <div class="title-card small">
+    <h2 id="goneName">Your kitchen closed</h2>
+    <p class="tag">It sat idle for a while, so it was cleared away. Nothing is wrong.</p>
+    <button class="btn big" id="goneBtn" type="button">Start a fresh one</button>
+  </div>
 </div>
 
 <dialog id="orderDialog">
@@ -77,14 +158,33 @@
   </form>
 </dialog>
 
+<dialog id="startOver">
+  <div class="dlg startover">
+    <h2>Start over</h2>
+    <p>A fresh kitchen is a new repo with no orders and a score of 0. You keep your name, your team and your plot, and the customers you had not finished go back to your team's backlog.</p>
+    <div class="row"><button class="btn" id="freshGo" type="button">Fresh kitchen</button><button class="btn ghost" id="startOverClose" type="button">Cancel</button></div>
+    <details id="resetBox">
+      <summary>Presenter: reset the whole town</summary>
+      <p>Every kitchen, customer and score is cleared, and everybody's page reloads into a new town. It needs the token printed in the presenter's terminal.</p>
+      <form id="resetForm" class="line" autocomplete="off">
+        <input id="resetToken" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="80" placeholder="Presenter's token" aria-label="Presenter's reset token">
+        <button class="btn danger" id="resetGo" type="submit">Reset town</button>
+      </form>
+      <p class="resetmsg" id="resetMsg" role="status"></p>
+    </details>
+  </div>
+</dialog>
+
 <dialog id="reportDialog">
   <div class="dlg report-dlg">
-    <small>Shift over</small>
+    <small id="repKicker">Shift over</small>
+    <div class="stars" id="repStars" role="img"></div>
     <h2 id="repTitle">Shift report</h2>
-    <div class="stars" id="repStars"></div>
-    <p class="advice" id="repAdvice"></p>
+    <p class="repline" id="repLine"></p>
     <div class="report" id="repBody"></div>
-    <div class="row"><button class="btn" id="repClose" type="button">Run the pass</button></div>
+    <p class="advice" id="repAdvice"></p>
+    <p class="repfoot" id="repFoot"></p>
+    <div class="row"><button class="btn big ship" id="repAgain" type="button">Play again</button><button class="btn" id="repClose" type="button">Run the pass</button></div>
   </div>
 </dialog>
 

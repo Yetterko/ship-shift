@@ -30,8 +30,9 @@ export function allow(stamps, max, windowMs) {
 }
 
 const reEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-// A path separator as it shows up in text: a slash, a backslash, or a backslash escaped inside JSON.
-const SEP = String.raw`(?:\\\\|\\|/)`;
+// A path separator as it shows up in text: a slash, a backslash, or a backslash escaped once or more. JSON doubles it, and a
+// test runner that prints a file's location as a quoted string doubles it again before JSON does.
+const SEP = String.raw`(?:\\+|/)`;
 const pathPattern = dir => path.resolve(dir).split(/[\\/]+/).map(reEsc).join(SEP);
 
 /**
@@ -39,18 +40,20 @@ const pathPattern = dir => path.resolve(dir).split(/[\\/]+/).map(reEsc).join(SEP
  * Works on plain text and on JSON, where Windows separators are doubled.
  */
 export function scrubber(sessionsDir, root) {
-  const session = new RegExp(`${pathPattern(sessionsDir)}${SEP}[a-f0-9]{32}`, 'gi');
+  // The rest of the path is tidied to forward slashes. Only doubled backslashes count there, so a JSON "\n" after a path is left alone.
+  const session = new RegExp(String.raw`${pathPattern(sessionsDir)}${SEP}[a-f0-9]{32}((?:(?:(?:\\\\)+|/)[\w.@-]+)*)`, 'gi');
   const home = new RegExp(pathPattern(root), 'gi');
-  return text => String(text).replace(session, '~/kitchen').replace(home, '~');
+  return text => String(text).replace(session, (_all, rest) => '~/kitchen' + rest.replace(/(?:\\\\)+/g, '/')).replace(home, '~');
 }
 
 export class Sessions {
   /**
-   * build(dir) makes one visitor's kitchen inside dir and returns { kitchen, stop() }.
+   * build(dir, session) makes one visitor's kitchen inside dir and returns { kitchen, stop() }.
    * max is how many kitchens may be open at once, and idleMs how long one lives after its visitor's last request.
+   * onEnd(session) runs once, the moment a kitchen's place is freed: the town uses it to clear the plot.
    */
-  constructor({ dir, max = 25, idleMs = 20 * 60_000, build }) {
-    Object.assign(this, { dir: path.resolve(dir), max, idleMs, build });
+  constructor({ dir, max = 25, idleMs = 20 * 60_000, build, onEnd = null }) {
+    Object.assign(this, { dir: path.resolve(dir), max, idleMs, build, onEnd });
     this.live = new Map();
     this.closing = new Set();
   }
@@ -87,7 +90,7 @@ export class Sessions {
     const id = crypto.randomBytes(16).toString('hex');
     const s = { id, dir: path.join(this.dir, id), kitchen: null, stop: null, sockets: new Set(), lastSeen: Date.now(), requests: [], orders: [] };
     this.live.set(id, s);
-    s.ready = this.build(s.dir).then(
+    s.ready = this.build(s.dir, s).then(
       built => { Object.assign(s, built); return s; },
       async e => { await this.end(s); throw e; },
     );
@@ -104,6 +107,7 @@ export class Sessions {
   end(s) {
     if (this.live.get(s.id) !== s) return Promise.resolve();
     this.live.delete(s.id);
+    try { this.onEnd?.(s); } catch (e) { console.error('Leaving the town failed:', e.message); }
     const done = (async () => {
       for (const ws of s.sockets) ws.close(4001, 'Kitchen closed');
       s.sockets.clear();
@@ -114,6 +118,25 @@ export class Sessions {
     this.closing.add(done);
     done.finally(() => this.closing.delete(done));
     return done;
+  }
+
+  /**
+   * A fresh kitchen for the same visitor: the old one is stopped and deleted, and build() runs again in the same directory.
+   * The session, its cookie and its sockets stay. Requests that arrive meanwhile wait on session.ready.
+   */
+  rebuild(s) {
+    if (this.live.get(s.id) !== s) return Promise.reject(new Error('That kitchen has closed'));
+    const before = Promise.resolve(s.ready).catch(() => {});
+    const ready = s.ready = (async () => {
+      await before;
+      try { await s.stop?.(); } catch (e) { console.error('Stopping a kitchen failed:', e.message); }
+      await fs.rm(s.dir, RM);
+      if (this.live.get(s.id) !== s) throw new Error('That kitchen has closed');
+      Object.assign(s, await this.build(s.dir, s));
+      return s;
+    })();
+    ready.catch(() => { if (s.ready === ready) this.end(s); });
+    return ready;
   }
 
   /** Closes every kitchen and removes the sessions directory. */

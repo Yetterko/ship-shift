@@ -2,7 +2,8 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import * as G from './git.mjs';
-import { grantClassFor, GRANT_CLASSES } from './agents.mjs';
+import { grantClassFor, GRANT_CLASSES, RANKS, DEFAULT_RANK, rankOf } from './agents.mjs';
+import { cleanName } from './world.mjs';
 
 const SIZE_POINTS = { S: 1, M: 2, L: 3 };
 const TARGET_MIN = { S: 10, M: 20, L: 40 };
@@ -14,6 +15,14 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 // A blocked chef: smoke, then fire, and a point lost per PENALTY_EVERY_MS once the grace has passed. All divided by pace.
 const SMOKE_MS = 20_000, FIRE_MS = 60_000, PENALTY_EVERY_MS = 10_000, PENALTY_CAP = 30;
 const STREAK_STEP = 0.25, STREAK_MAX = 2;
+// How many customers fit at the order window at once, for a town kitchen that admits them from its door queue.
+const WINDOW_SLOTS = 4;
+const MAX_CHEFS = 6;
+// Names for hired chefs, in the order they are offered.
+const HIRE_NAMES = ['Cache', 'Lambda', 'Vector', 'Kernel', 'Socket', 'Buffer', 'Token', 'Daemon'];
+const noSpend = () => Object.fromEntries(RANKS.map(r => [r.id, 0]));
+const refuse = (code, status, message) => { throw Object.assign(new Error(message), { code, status }); };
+const dish = s => String(s || '').trim().toLowerCase();
 
 const now = () => Date.now();
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || 'order';
@@ -21,6 +30,8 @@ const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, 
 function emptyStats() {
   return {
     shipped: 0, firstTime: 0, sentBack: 0, conflicts: 0, burntShipped: 0, blockedMs: 0, questions: 0, focusBreaks: 0, costUsd: 0, score: 0,
+    // costUsd is the spend meter: real API dollars for real chefs, plus the wages of simulated ones. apiUsd is the real dollars alone.
+    apiUsd: 0, spendByRank: noSpend(), hires: 0,
     blindShips: 0, steers: 0, refires: 0, streak: 1, blockedPenalty: 0, points: [],
   };
 }
@@ -46,12 +57,22 @@ export class Kitchen extends EventEmitter {
   /**
    * driver cooks for every chef that has no driver of its own, and writes the plans.
    * pace divides ticket targets and the blocked-chef timings, so a demo can run a whole service in minutes.
+   * grace stretches the blocked-chef timings (smoke, fire and the waiting penalty) together: the demo gives a first-timer longer to answer.
+   * restart is the route that hands out a fresh kitchen, when the server has one; the snapshot advertises it.
+   * hireCost is what hiring a chef costs in score. hireDriver cooks for hired chefs (the kitchen's own driver by default).
    */
-  constructor({ repo, dataDir, driver, testCmd, chefs, mainBranch = 'main', model, pace = 1, focusMin = 25, breakMin = 5 }) {
+  constructor({ repo, dataDir, driver, testCmd, chefs, mainBranch = 'main', model, pace = 1, focusMin = 25, breakMin = 5, grace = 1, restart = null, hireCost = 0, hireDriver = null, budget = null }) {
     super();
-    Object.assign(this, { repo, dataDir, driver, testCmd, mainBranch, model });
+    Object.assign(this, { repo, dataDir, driver, testCmd, mainBranch, model, restart });
+    this.budget = budget;             // () => what is left of the API budgets, for a kitchen whose chefs are API chefs
+    this.hireCost = Math.max(0, Number(hireCost) || 0);
+    this.hireDriver = hireDriver || driver;
+    this.nextHire = 1;
     this.pace = Number(pace) > 0 ? Number(pace) : 1;
-    this.chefs = chefs.map(c => ({ id: c.id, name: c.name, style: c.style, model: c.model || model, driver: c.driver || driver, orderId: null }));
+    this.grace = Number(grace) > 0 ? Number(grace) : 1;
+    this.commits = null;              // commits on main, counted whenever the pass is refreshed
+    // A chef whose model was set for them (SHIP_CHEF_MODELS) keeps it whatever their rank. Everyone else cooks with their rank's model.
+    this.chefs = chefs.map(c => this.staff({ id: c.id, name: c.name, style: c.style, pinned: c.model || null, driver: c.driver || driver, rank: c.rank || (c.model && RANKS.find(r => r.model === c.model)?.id) || DEFAULT_RANK }));
     this.orders = [];
     this.questions = [];
     this.stats = emptyStats();
@@ -71,14 +92,30 @@ export class Kitchen extends EventEmitter {
     try {
       const saved = JSON.parse(await fs.readFile(this.file, 'utf8'));
       this.orders = (saved.orders || []).map(o => ({ touched: [], files: [], merge: null, approved: false, refires: 0, grants: [], ...o }));
-      this.stats = { ...emptyStats(), ...saved.stats };
+      this.stats = { ...emptyStats(), ...saved.stats, spendByRank: { ...noSpend(), ...saved.stats?.spendByRank } };
       this.nextId = saved.nextId || this.orders.length + 1;
       if (saved.rules) this.rules = { autoRefire: Boolean(saved.rules.autoRefire) };
-      for (const c of saved.chefs || []) { const mine = this.chefs.find(x => x.id === c.id); if (mine) mine.orderId = c.orderId; }
+      // The saved roster is the roster: a dismissed chef stays gone and a hired one comes back.
+      if (saved.chefs?.length) {
+        const known = new Map(this.chefs.map(c => [c.id, c]));
+        const roster = saved.chefs.map(c => known.get(c.id) || (c.hired ? this.staff({ id: c.id, name: cleanName(c.name) || c.id, style: '', pinned: null, driver: this.hireDriver, rank: c.rank, hired: true }) : null)).filter(Boolean).slice(0, MAX_CHEFS);
+        if (roster.length) this.chefs = roster;
+      }
+      this.nextHire = saved.nextHire || this.chefs.filter(c => c.hired).length + 1;
+      for (const c of saved.chefs || []) {
+        const mine = this.chefs.find(x => x.id === c.id);
+        if (!mine) continue;
+        mine.orderId = c.orderId;
+        if (rankOf(c.rank)) this.setRank(mine, c.rank);
+        // A chef keeps the name the head chef gave them, as long as it still passes the filter and is nobody else's.
+        const name = cleanName(c.name);
+        if (name && !this.chefs.some(x => x !== mine && x.name.toLowerCase() === name.toLowerCase())) mine.name = name;
+      }
       for (const o of this.orders) if (LIVE.has(o.state)) { o.state = 'stalled'; o.error = 'The kitchen restarted while this was cooking. Resume it or bin it.'; }
       if (saved.shift?.no) this.shift.no = saved.shift.no;
     } catch { /* fresh kitchen */ }
     for (const c of this.chefs) if (c.orderId && !this.orders.find(o => o.id === c.orderId && !['shipped', 'binned'].includes(o.state))) c.orderId = null;
+    await this.countCommits();
     this.timer = setInterval(() => this.tick(), 250);
     this.refreshPass().catch(() => {});
   }
@@ -103,7 +140,7 @@ export class Kitchen extends EventEmitter {
   }
 
   async save() {
-    const data = { orders: this.orders, stats: this.stats, nextId: this.nextId, rules: this.rules, chefs: this.chefs.map(c => ({ id: c.id, orderId: c.orderId })), shift: { no: this.shift.no } };
+    const data = { orders: this.orders, stats: this.stats, nextId: this.nextId, rules: this.rules, chefs: this.chefs.map(c => ({ id: c.id, orderId: c.orderId, name: c.name, rank: c.rank, hired: Boolean(c.hired) })), nextHire: this.nextHire, shift: { no: this.shift.no } };
     await fs.writeFile(this.file + '.tmp', JSON.stringify(data, null, 2));
     await fs.rename(this.file + '.tmp', this.file);
   }
@@ -114,10 +151,15 @@ export class Kitchen extends EventEmitter {
       driver: drivers.size === 1 ? [...drivers][0] : 'mixed',
       repo: this.repo, mainBranch: this.mainBranch, testCmd: this.testCmd, now: now(),
       pace: this.pace,
-      escalation: { smokeMs: SMOKE_MS / this.pace, fireMs: FIRE_MS / this.pace },
+      escalation: { smokeMs: this.blockedMs(SMOKE_MS), fireMs: this.blockedMs(FIRE_MS), everyMs: this.blockedMs(PENALTY_EVERY_MS) },
+      commits: this.commits,
+      ...(this.restart ? { restart: this.restart } : {}),
+      ...(this.budget ? { budget: this.budget() } : {}),
       grants: [...this.grants],
       rules: { ...this.rules },
-      chefs: this.chefs.map(c => ({ id: c.id, name: c.name, style: c.style, model: c.model, driver: c.driver.name, orderId: c.orderId, blocked: this.questions.some(q => q.chefId === c.id) })),
+      chefs: this.chefs.map(c => ({ id: c.id, name: c.name, style: c.style, model: c.model, rank: c.rank, wage: rankOf(c.rank).wage, hired: Boolean(c.hired), driver: c.driver.name, orderId: c.orderId, blocked: this.questions.some(q => q.chefId === c.id) })),
+      ranks: RANKS.map(r => ({ id: r.id, label: r.label, model: r.model, wage: r.wage })),
+      hiring: { max: MAX_CHEFS, cost: this.hireCost, defaultRank: DEFAULT_RANK },
       orders: this.orders.map(o => ({ ...o, targetMin: TARGET_MIN[o.size] / this.pace, stage: STAGE[o.state] || null })),
       overlaps: this.overlaps(),
       questions: this.questions,
@@ -125,6 +167,9 @@ export class Kitchen extends EventEmitter {
       shift: this.shift,
     };
   }
+
+  /** A blocked-chef timing in real milliseconds at this kitchen's pace and grace. */
+  blockedMs(ms) { return ms * this.grace / this.pace; }
 
   order(id) {
     const o = this.orders.find(x => x.id === Number(id));
@@ -145,14 +190,102 @@ export class Kitchen extends EventEmitter {
 
   noteHumanAction() { if (this.shift.mode === 'focus') this.stats.focusBreaks++; }
 
+  /* ---------- chefs ---------- */
+  /** One chef on the roster. Their model is the pinned one, or their rank's (the kitchen's own model for the default rank). */
+  staff({ id, name, style, pinned, driver, rank, hired = false }) {
+    const chef = { id, name, style: style || '', pinned, driver, hired, orderId: null, rank: DEFAULT_RANK, model: null };
+    this.setRank(chef, rankOf(rank) ? rank : DEFAULT_RANK);
+    return chef;
+  }
+
+  setRank(chef, rank) {
+    chef.rank = rank;
+    chef.model = chef.pinned || (rank === DEFAULT_RANK && this.model) || rankOf(rank).model;
+  }
+
+  chef(id) { return this.chefs.find(c => c.id === id) || refuse('gone', 404, 'No such chef'); }
+
+  /** The name a chef may take: 1 to 14 plain characters, nothing rude, nobody else's in this kitchen. */
+  chefName(name, except) {
+    // A player's name is cut to 14 characters; a chef's name that is too long is refused, so the label never differs from what was typed.
+    const clean = typeof name === 'string' && name.trim().length <= 14 ? cleanName(name) : null;
+    if (!clean) refuse('name', 400, 'Pick another name: up to 14 letters, and nothing rude.');
+    if (this.chefs.some(c => c !== except && c.name.toLowerCase() === clean.toLowerCase())) refuse('taken', 409, `Another chef is already called ${clean}.`);
+    return clean;
+  }
+
+  /**
+   * Hires a chef at a rank. A kitchen holds at most six, and where hiring has a price it is paid in score.
+   * Returns { id, name, rank, note }.
+   */
+  hireChef({ rank = DEFAULT_RANK, name } = {}) {
+    const r = rankOf(rank) || refuse('rank', 400, `A rank is one of ${RANKS.map(x => x.id).join(', ')}.`);
+    if (this.chefs.length >= MAX_CHEFS) refuse('full', 409, `A kitchen holds ${MAX_CHEFS} chefs. Let one go before you hire another.`);
+    const taken = new Set(this.chefs.map(c => c.name.toLowerCase()));
+    const given = name === undefined || name === null || name === '' ? (HIRE_NAMES.find(n => !taken.has(n.toLowerCase())) || `Chef ${this.nextHire}`) : this.chefName(name);
+    let id;
+    do id = `hire${this.nextHire++}`; while (this.chefs.some(c => c.id === id));
+    const chef = this.staff({ id, name: given, style: '', pinned: null, driver: this.hireDriver, rank: r.id, hired: true });
+    this.chefs.push(chef);
+    this.stats.hires++;
+    if (this.hireCost) this.score(-this.hireCost, `Hired ${given}, ${r.label}`);
+    this.noteHumanAction();
+    this.changed();
+    return { id, name: given, rank: r.id, note: `hired ${given} as a ${r.label}` };
+  }
+
+  /** Promotes or demotes a chef. The new model cooks from their next run; a session already under way keeps the model it started with. */
+  rankChef(id, rank) {
+    const chef = this.chef(id), r = rankOf(rank) || refuse('rank', 400, `A rank is one of ${RANKS.map(x => x.id).join(', ')}.`);
+    const was = chef.rank;
+    if (was !== r.id) {
+      this.setRank(chef, r.id);
+      const o = chef.orderId ? this.orders.find(x => x.id === chef.orderId) : null;
+      const up = RANKS.findIndex(x => x.id === r.id) < RANKS.findIndex(x => x.id === was);
+      if (o) this.log(o, 'info', `${chef.name} is now a ${r.label}. It counts from their next run`);
+      this.noteHumanAction();
+      this.changed();
+      return { id: chef.id, name: chef.name, rank: r.id, was, note: `${up ? 'promoted' : 'moved'} ${chef.name} to ${r.label}` };
+    }
+    return { id: chef.id, name: chef.name, rank: r.id, was, note: null };
+  }
+
+  /** Lets a chef go. Only an idle chef can leave, and a kitchen keeps at least one. */
+  dismissChef(id) {
+    const chef = this.chef(id);
+    if (chef.orderId) refuse('busy', 409, `${chef.name} is cooking #${chef.orderId}. Wait for the plate, or bin it first.`);
+    if (this.chefs.length <= 1) refuse('last', 409, 'A kitchen needs at least one chef.');
+    this.chefs.splice(this.chefs.indexOf(chef), 1);
+    this.noteHumanAction();
+    this.changed();
+    return { id: chef.id, name: chef.name, rank: chef.rank, note: `let ${chef.name} go` };
+  }
+
+  /**
+   * Renames a chef: 1 to 14 plain characters, nothing rude, and no two chefs in a kitchen with the same name.
+   * Returns { id, name, was }. A refusal carries a code (gone, name, taken) and an HTTP status.
+   */
+  renameChef(id, name) {
+    const chef = this.chef(id), clean = this.chefName(name, chef);
+    const was = chef.name;
+    if (clean !== was) {
+      chef.name = clean;
+      const o = chef.orderId ? this.orders.find(x => x.id === chef.orderId) : null;
+      if (o) this.log(o, 'info', `${was} is now ${clean}`);
+      this.changed();
+    }
+    return { id: chef.id, name: clean, was };
+  }
+
   /* ---------- orders ---------- */
-  addOrder({ title, body = '', size = 'M' }) {
+  addOrder({ title, body = '', size = 'M', plan = null, cardId = null }) {
     title = String(title || '').trim();
     if (!title) throw new Error('An order needs a title');
     if (!SIZE_POINTS[size]) size = 'M';
     const o = {
       id: this.nextId++, title: title.slice(0, 120), body: String(body).slice(0, 4000), size, state: 'waiting',
-      plan: null, chefId: null, branch: null, worktree: null, sessionId: null, activity: [], summary: '', tests: null,
+      plan: typeof plan === 'string' && plan.trim() ? plan.trim().slice(0, 4000) : null, cardId: typeof cardId === 'string' ? cardId : null,
+      chefId: null, branch: null, worktree: null, sessionId: null, activity: [], summary: '', tests: null,
       diff: null, behind: 0, rounds: 0, feedback: [], costUsd: 0, error: null,
       touched: [], files: [], merge: null, approved: false, refires: 0, grants: [],
       createdAt: now(), assignedAt: null, atPassAt: null, shippedAt: null,
@@ -160,6 +293,34 @@ export class Kitchen extends EventEmitter {
     this.orders.push(o);
     this.changed();
     return o;
+  }
+
+  /* ---------- the town's link: a customer walks in from the door queue, or back out ---------- */
+  /** Takes a waiting order off the rail for good, because its customer left for the park. Only a waiting order can go. */
+  withdraw(id) {
+    const o = this.order(id);
+    if (o.state !== 'waiting') throw new Error(`Order #${o.id} is ${o.state}, and only a waiting order can leave`);
+    this.orders.splice(this.orders.indexOf(o), 1);
+    this.changed();
+    return o;
+  }
+
+  /** True when this kitchen has the dish on the rail, on the line or already served. A binned order does not count. */
+  has(title) { return this.orders.some(o => o.state !== 'binned' && dish(o.title) === dish(title)); }
+
+  /** What the town may know about this kitchen: its score, its lights and where each order stands. Nothing about the repo. */
+  summary() {
+    const count = (...states) => this.orders.filter(o => states.includes(o.state)).length;
+    const since = this.questions.length ? Math.min(...this.questions.map(q => q.createdAt)) : null;
+    return {
+      score: this.stats.score, shipped: this.stats.shipped, stars: this.shift.report?.stars || 0,
+      window: Math.max(0, WINDOW_SLOTS - count('waiting', 'planning')),
+      lights: {
+        cooking: count('cooking'), oven: count('testing'), pass: count('at_pass', 'merging'), blocked: this.questions.length,
+        fire: since !== null && now() - since >= this.blockedMs(FIRE_MS), stalled: count('stalled'), since,
+      },
+      orders: this.orders.map(o => ({ id: o.id, state: o.state, cardId: o.cardId || null, size: o.size })),
+    };
   }
 
   async planOrder(id) {
@@ -177,7 +338,7 @@ export class Kitchen extends EventEmitter {
     });
     if (this.runs.get(o.id) === run) this.runs.delete(o.id);
     if (o.state !== 'planning') return; // binned meanwhile
-    o.costUsd += res.costUsd; this.stats.costUsd += res.costUsd;
+    this.spend(o, null, res.costUsd, true);
     if (res.isError) { o.state = 'waiting'; o.error = `Planning failed: ${res.error}`; }
     else { o.plan = res.summary.trim(); o.state = 'waiting'; this.log(o, 'info', 'Plan ready'); }
     this.changed();
@@ -221,8 +382,13 @@ export class Kitchen extends EventEmitter {
     this.changed();
     const run = { ctl: new AbortController(), superseded: false };
     this.runs.set(o.id, run);
+    // A session keeps the model it started with: resuming one under another model is not known to be safe.
+    // A promotion or demotion counts from the chef's next fresh session, and at once for how a simulated chef behaves.
+    const model = resume && o.sessionId && o.model ? o.model : chef.model;
+    o.model = model;
+    run.chef = chef; run.rank = chef.rank;
     run.done = chef.driver.run({
-      cwd: o.worktree, prompt, model: chef.model, signal: run.ctl.signal, order: { id: o.id, title: o.title },
+      cwd: o.worktree, prompt, model, rank: chef.rank, signal: run.ctl.signal, order: { id: o.id, title: o.title, mainBranch: this.mainBranch },
       resume: resume ? o.sessionId : undefined,
       systemAppend: chef.style ? `Your cooking style: ${chef.style}` : '',
       onEvent: ev => {
@@ -241,13 +407,43 @@ export class Kitchen extends EventEmitter {
     if (run.superseded) return; // a call-out interrupted this run; steer() starts the next one
     this.runs.delete(o.id);
     if (o.state !== 'cooking') return; // binned while cooking
-    o.costUsd += res.costUsd; this.stats.costUsd += res.costUsd;
+    this.spend(o, run.rank, res.costUsd, true);
     if (res.isError) {
       o.state = 'stalled'; o.error = res.error || 'The agent stopped';
       this.log(o, 'error', o.error); this.changed(); return;
     }
     o.summary = res.summary;
     await this.toThePass(o);
+  }
+
+  /** Adds to the spend meter: on the order, in the stats, and under the chef's rank. api marks real dollars from a real agent. */
+  spend(o, rank, usd, api = false) {
+    if (!(usd > 0)) return;
+    if (o) o.costUsd += usd;
+    this.stats.costUsd += usd;
+    if (api) this.stats.apiUsd += usd;
+    if (rank && rank in this.stats.spendByRank) this.stats.spendByRank[rank] += usd;
+  }
+
+  /**
+   * A simulated chef earns their rank's wage for every game minute they are actually cooking: not in the oven, not at the pass,
+   * and not while they wait on the head chef. A real chef's spend is the real bill, so they earn no wage on top.
+   */
+  payWages() {
+    const t = now(), dt = Math.min(2000, t - (this.paidAt || t));
+    this.paidAt = t;
+    if (dt <= 0) return false;
+    let any = false;
+    for (const [orderId, run] of this.runs) {
+      const o = this.orders.find(x => x.id === orderId), chef = run.chef;
+      if (!chef || chef.driver.name !== 'sim' || o?.state !== 'cooking' || run.superseded || this.questions.some(q => q.orderId === orderId)) continue;
+      this.spend(o, run.rank, rankOf(run.rank).wage * dt * this.pace / 60000);
+      any = true;
+    }
+    // The meter moves about once a second while somebody cooks.
+    if (!any || t - (this.wagesShownAt || 0) < 1000) return false;
+    this.wagesShownAt = t;
+    return true;
   }
 
   async toThePass(o) {
@@ -274,8 +470,15 @@ export class Kitchen extends EventEmitter {
     await this.refreshPass();
   }
 
+  /** Counts the commits on main, for the snapshot. Leaves the last count alone when git cannot say. */
+  async countCommits() {
+    const out = await G.git(this.repo, ['rev-list', '--count', this.mainBranch], { allowFail: true });
+    if (out !== null && Number.isFinite(Number(out))) this.commits = Number(out);
+  }
+
   /** Recomputes merge truth for every plate at the pass: how far behind, which files, whether it still merges. */
   async refreshPass() {
+    await this.countCommits();
     const plates = this.orders.filter(o => o.state === 'at_pass' && o.branch);
     for (const o of plates) {
       o.behind = await G.behindBy(this.repo, this.mainBranch, o.branch);
@@ -518,7 +721,7 @@ export class Kitchen extends EventEmitter {
 
   /** A chef waiting on you past the grace costs a point every interval, up to a cap, so a forgotten ? cannot drain a whole score. */
   chargeBlocked() {
-    const grace = SMOKE_MS / this.pace, every = PENALTY_EVERY_MS / this.pace;
+    const grace = this.blockedMs(SMOKE_MS), every = this.blockedMs(PENALTY_EVERY_MS);
     let any = false;
     for (const q of this.questions) {
       const owed = Math.min(PENALTY_CAP, Math.max(0, Math.floor((now() - q.createdAt - grace) / every)));
@@ -533,7 +736,8 @@ export class Kitchen extends EventEmitter {
   }
 
   tick() {
-    const charged = this.chargeBlocked();
+    const paid = this.payWages();
+    const charged = this.chargeBlocked() || paid;
     const s = this.shift;
     if (s.mode === 'off' || !s.endsAt || now() < s.endsAt) { if (charged) this.changed(); return; }
     if (s.mode === 'focus') {
@@ -545,6 +749,8 @@ export class Kitchen extends EventEmitter {
         blockedMs: d('blockedMs') + this.questions.reduce((t, q) => t + (now() - Math.max(q.createdAt, s.startedAt)), 0),
         questions: d('questions'), focusBreaks: d('focusBreaks'), costUsd: d('costUsd'), score: d('score'),
         blindShips: d('blindShips'), steers: d('steers'), refires: d('refires'), blockedPenalty: d('blockedPenalty'), streak: b.streak,
+        apiUsd: d('apiUsd'), hires: d('hires'),
+        spendByRank: Object.fromEntries(RANKS.map(r => [r.id, (b.spendByRank?.[r.id] || 0) - (a?.spendByRank?.[r.id] || 0)])),
         waiting: this.questions.length, atPass: this.orders.filter(o => o.state === 'at_pass').length,
       };
       s.report = { ...report, ...judge(report) };

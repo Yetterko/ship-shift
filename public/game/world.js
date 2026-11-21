@@ -1,7 +1,8 @@
 // The room, its stations, the people in it, and everything that moves on its own.
 // Where things are is the client's business; what they are is the server's.
 import { THREE, V, scene, toon, flat, add, rbox, cyl, ball, capsule, plane, blob, canvasTex, signTex, spawn, confetti, label, popup, shake } from './scene.js';
-import { G, nowS, orderOf, questionFor, escalation, modelName, esc, mmss, emit, ICON, reduceMotion } from './core.js';
+import { G, nowS, orderOf, questionFor, escalation, modelName, esc, mmss, emit, ICON, reduceMotion, quiet } from './core.js';
+import { PHRASES } from './presence.js';
 
 /* ======================= layout ======================= */
 export const CHEF_X = [-3.6, -1.2, 1.2, 3.6];
@@ -88,7 +89,7 @@ rbox(0.32, 2.0, 7.3, wallMat, 6.2, 0, -1.45, scene, 0.05);
 rbox(0.42, 0.14, 7.3, C.cream, 6.2, 1.96, -1.45);
 rbox(0.34, 2.0, 0.34, C.cream, 6.2, 0, 3.6);
 // front and left edges, kept low so nothing hides behind them
-rbox(12.9, 0.42, 0.3, C.brick, 0.15, 0, 3.66); rbox(12.9, 0.08, 0.38, C.cream, 0.15, 0.42, 3.66);
+const frontWall = [rbox(12.9, 0.42, 0.3, C.brick, 0.15, 0, 3.66), rbox(12.9, 0.08, 0.38, C.cream, 0.15, 0.42, 3.66)];
 rbox(0.36, 2.3, 0.36, C.cream, -6.18, 0, -3.7); rbox(0.36, 1.25, 0.36, C.cream, -6.18, 0, 3.6);
 
 function counter(x0, x1, z0, z1, top = woodTop, body = C.cab) {
@@ -144,11 +145,17 @@ export const chefStations = CHEF_X.map((x, j) => {
   cyl(0.35, 0.36, 0.05, C.steelDark, 0, 0, 0, lid, 22); ball(0.07, C.ink, 0, 0.1, 0, lid, 10);
   lid.visible = false;
   const spoon = rbox(0.04, 0.5, 0.04, woodTop, 0.12, 0.2, 0.05, pot, 0.015); spoon.rotation.z = -0.35; spoon.visible = false;
+  // what a chef left waiting too long looks like: real flames in the pot and a red wash across the floor in front of the stove
+  const fire = new THREE.Group(); fire.position.set(x - 0.12, COUNTER_H + 0.34, -3.1); fire.visible = false; scene.add(fire);
+  [[0, 0.36, 1.05, '#ff4a1c', 0], [-0.2, 0.2, 0.66, '#ff7a22', 0.02], [0.2, 0.21, 0.72, '#ff7a22', 0.02], [0, 0.21, 0.66, '#ffd23f', 0.12]].forEach(([dx, r, h, col, dz]) => {
+    const m = add(new THREE.ConeGeometry(r, h, 9), flat(col, { toneMapped: false, transparent: true, opacity: 0.96, unique: true }), dx, h / 2, dz, fire, false); m.userData.h = h; m.renderOrder = 3;
+  });
+  const alarm = plane(2.6, 2.0, flat('#ff3b24', { map: glowTex, transparent: true, opacity: 0, depthWrite: false, unique: true, toneMapped: false }), x, 0.022, -2.15); alarm.renderOrder = 2;
   // a clip on the counter where the chef's ticket hangs
   rbox(0.34, 0.03, 0.44, '#b9d7d2', x + 0.42, COUNTER_H + 0.04, -3.1, scene, 0.01);
   return station({
     id: `chef${j}`, type: 'chef', j, chefId: null, top: V(x - 0.12, COUNTER_H + 0.45, -3.1), potPos: V(x - 0.12, COUNTER_H + 0.5, -3.1), ticketPos: V(x + 0.42, COUNTER_H + 0.08, -3.1),
-    access: [V(x, 0, -2.35)], ring: V(x, 0, -2.35), stand: V(x, 0, -4.1), pot, soup, lid, spoon, burner, glow, heat: 0, meshes: [body, hob, potBody, pot],
+    access: [V(x, 0, -2.35)], ring: V(x, 0, -2.35), stand: V(x, 0, -4.1), pot, soup, lid, spoon, burner, glow, fire, alarm, burn: 0, heat: 0, meshes: [body, hob, potBody, pot],
   });
 });
 
@@ -185,17 +192,13 @@ cyl(0.15, 0.17, 0.06, C.ink, 5.36, 1.5, OVEN_Z - 0.36, scene, 14);
 const leverBase = rbox(0.3, 0.1, 0.22, C.ink, 5.42, 1.5, OVEN_Z + 0.34, scene, 0.03);
 const lever = new THREE.Group(); lever.position.set(5.42, 1.58, OVEN_Z + 0.34); scene.add(lever);
 rbox(0.05, 0.34, 0.05, C.steel, 0, 0, 0, lever, 0.02); const leverKnob = ball(0.085, toon(C.red, { key: 'lever' }).clone(), 0, 0.38, 0, lever, 12);
+lever.scale.setScalar(1.6);
 export const ovenSt = station({ id: 'oven', type: 'oven', top: V(5.5, 1.75, OVEN_Z), inside: V(5.62, 0.62, OVEN_Z), mouth: V(5.0, 0.8, OVEN_Z), access: [V(4.95, 0, OVEN_Z)], ring: V(4.95, 0, OVEN_Z), door: 0, lampT: 0, meshes: [ovenBody, ovenDoor, leverBase, lever] });
 
 // the pass: brass, under heat lamps
 const passMeshes = counter(5.3, 6.0, -1.62, 2.02, toon(C.brass));
 plane(1.3, 3.9, flat('#ffffff', { map: glowTex, transparent: true, opacity: 0.4, depthWrite: false }), 5.6, COUNTER_H + 0.012, 0.37).renderOrder = 2;
-for (const z of [-0.37, 1.12]) {
-  rbox(0.5, 0.05, 0.05, C.ink, 5.9, 2.2, z, scene, 0.02);
-  cyl(0.02, 0.02, 0.3, C.ink, 5.65, 1.92, z, scene, 6);
-  const shade = cyl(0.08, 0.26, 0.2, C.cabDark, 5.65, 1.7, z, scene, 16); shade.castShadow = false;
-  ball(0.09, flat('#ffe2a0', { toneMapped: false }), 5.65, 1.68, z, scene, 10).castShadow = false;
-}
+// no lamps hang over the pass: from this camera anything above the counter sits in front of a plate, so the warm glow does the job alone
 export const passStations = PASS_Z.map((z, i) => {
   const dot = cyl(0.3, 0.3, 0.012, '#c48f2e', 5.65, COUNTER_H + 0.004, z, scene, 20); dot.castShadow = false;
   return station({ id: `pass${i}`, type: 'pass', i, top: V(5.65, COUNTER_H + 0.05, z), access: [V(4.95, 0, z)], ring: V(4.95, 0, z), meshes: [dot] });
@@ -212,11 +215,14 @@ const mainTex = signTex(256, 256, (g, w, h) => {
   g.fillStyle = '#2e8f63'; g.fillRect(0, 0, w, h); g.strokeStyle = '#fff1d6'; g.lineWidth = 10; g.strokeRect(12, 12, w - 24, h - 24);
   g.fillStyle = '#fff1d6'; g.textAlign = 'center'; g.textBaseline = 'middle';
   g.font = '58px Bungee, Impact, sans-serif'; g.fillText((G.S?.mainBranch || 'main').toUpperCase().slice(0, 6), w / 2, 92);
-  g.font = '700 34px Rubik, sans-serif'; g.fillStyle = '#ffd75e'; g.fillText(`${mainCount} shipped`, w / 2, 168);
+  g.font = '700 34px Rubik, sans-serif'; g.fillStyle = '#ffd75e'; g.fillText(G.S?.commits != null ? `${mainCount} commit${mainCount === 1 ? '' : 's'}` : `${mainCount} shipped`, w / 2, 168);
 });
-const mainSign = rbox(1.15, 1.2, 1.3, '#2e8f63', 7.0, 0, HATCH_Z, scene, 0.08);
+// main is a crate that jumps every time something lands in it
+const mainG = new THREE.Group(); mainG.position.set(7.0, 0, HATCH_Z); scene.add(mainG);
+const mainSign = rbox(1.15, 1.2, 1.3, '#2e8f63', 0, 0, 0, mainG, 0.08);
 rbox(0.12, 0.34, 0.7, C.ink, 6.44, 0.82, HATCH_Z, scene, 0.03);
-plane(1.0, 1.15, flat('#ffffff', { map: mainTex, toneMapped: false }), 7.0, 1.206, HATCH_Z);
+plane(1.0, 1.15, flat('#ffffff', { map: mainTex, toneMapped: false }), 0, 1.206, 0, mainG);
+const mainSpring = { squash: 0, squashV: 0 };
 export const hatchSt = station({ id: 'hatch', type: 'hatch', top: V(5.65, COUNTER_H + 0.08, HATCH_Z), out: V(6.6, COUNTER_H + 0.08, HATCH_Z), access: [V(4.95, 0, HATCH_Z)], ring: V(4.95, 0, HATCH_Z), meshes: [belt, mainSign, ...hatchMeshes] });
 
 // bin, front left
@@ -224,6 +230,31 @@ blob(1.1, 1.1, -4.6, 3.05);
 const binBody = cyl(0.36, 0.29, 0.74, '#6e8a5a', -4.6, 0, 3.05, scene, 16);
 const binLid = cyl(0.39, 0.39, 0.07, '#8fae74', -4.6, 0.74, 3.05, scene, 16); ball(0.06, C.ink, -4.6, 0.84, 3.05);
 export const binSt = station({ id: 'bin', type: 'bin', top: V(-4.6, 0.95, 3.05), access: [V(-4.6, 0, 2.35)], ring: V(-4.6, 0, 2.35), meshes: [binBody, binLid] });
+
+// the door to the park: a low swing gate in the front wall, with a mat inside it. It only exists in a town.
+const doorG = new THREE.Group(); doorG.visible = false; scene.add(doorG);
+const DOOR_X = -3.3, DOOR_Z = 3.66;
+{
+  for (const dx of [-0.62, 0.62]) { rbox(0.2, 1.25, 0.34, C.cream, DOOR_X + dx, 0, DOOR_Z, doorG, 0.05); ball(0.13, flat('#ffe2a0', { toneMapped: false }), DOOR_X + dx, 1.37, DOOR_Z, doorG, 12).castShadow = false; }
+  plane(1.0, 0.62, toon('#3f9e98', { outline: false }), DOOR_X, 0.012, 3.12, doorG).receiveShadow = true;        // the mat
+  plane(0.74, 0.4, toon('#58b8b0', { outline: false }), DOOR_X, 0.014, 3.12, doorG);
+}
+const gateL = new THREE.Group(), gateR = new THREE.Group();
+gateL.position.set(DOOR_X - 0.52, 0, DOOR_Z); gateR.position.set(DOOR_X + 0.52, 0, DOOR_Z); doorG.add(gateL, gateR);
+const gateMeshes = [rbox(0.5, 0.62, 0.07, C.teal, 0.26, 0.16, 0, gateL, 0.04), rbox(0.5, 0.62, 0.07, C.teal, -0.26, 0.16, 0, gateR, 0.04)];
+rbox(0.36, 0.08, 0.09, C.cream, 0.26, 0.6, 0, gateL, 0.03); rbox(0.36, 0.08, 0.09, C.cream, -0.26, 0.6, 0, gateR, 0.03);
+export const doorSt = { id: 'door', type: 'door', top: V(DOOR_X, 0.62, DOOR_Z), access: [V(DOOR_X, 0, 3.08)], ring: V(DOOR_X, 0, 3.08), swing: 0, meshes: [...gateMeshes, gateL, gateR] };
+/** A town exists: the gate appears and becomes a station. */
+export function enableDoor() {
+  if (doorG.visible) return;
+  doorG.visible = true;
+  // the front wall opens for it
+  for (const m of frontWall) m.visible = false;
+  for (const [x0, x1] of [[-6.3, DOOR_X - 0.6], [DOOR_X + 0.6, 6.6]]) { rbox(x1 - x0, 0.42, 0.3, C.brick, (x0 + x1) / 2, 0, 3.66); rbox(x1 - x0, 0.08, 0.38, C.cream, (x0 + x1) / 2, 0.42, 3.66); }
+  station(doorSt);
+  stencil('DOOR', 'to the park', DOOR_X, 2.3, 1.3);
+  stencils.at(-1).visible = !world.side;
+}
 
 // signs and street dressing
 function board3d(text, x, y, z, w, bg, fg = '#fff1d6') {
@@ -249,7 +280,39 @@ export const ring = plane(1.15, 1.15, flat('#ffd75e', { map: ringTex, transparen
 export const targetDot = plane(0.5, 0.5, flat('#ffffff', { map: ringTex, transparent: true, depthWrite: false, opacity: 0.9, toneMapped: false }), 0, 0.02, 0); targetDot.visible = false; targetDot.renderOrder = 2;
 const arrowTex = canvasTex(64, 64, (g) => { g.fillStyle = '#fff'; g.beginPath(); g.moveTo(32, 4); g.lineTo(58, 34); g.lineTo(42, 34); g.lineTo(42, 60); g.lineTo(22, 60); g.lineTo(22, 34); g.lineTo(6, 34); g.closePath(); g.fill(); });
 export const arrow = plane(0.8, 0.8, flat('#ff5a3c', { map: arrowTex, transparent: true, depthWrite: false, toneMapped: false }), 0, 0.03, 0); arrow.visible = false; arrow.renderOrder = 2;
-export const urgentRing = plane(1.5, 1.5, flat('#ff5a3c', { map: ringTex, transparent: true, depthWrite: false, toneMapped: false }), 0, 0.025, 0); urgentRing.visible = false; urgentRing.renderOrder = 2;
+export const urgentRing = plane(1.5, 1.5, flat('#ff5a3c', { map: ringTex, transparent: true, depthWrite: false, toneMapped: false, unique: true }), 0, 0.025, 0); urgentRing.visible = false; urgentRing.renderOrder = 2;
+arrow.material = arrow.material.clone();   // the floor arrow is red for trouble and gold for the walkthrough
+
+// every station's name is stencilled on the floor in front of it, with what it really is underneath
+const stencils = [];
+function stencil(name, means, x, z, w = 1.7) {
+  const tex = signTex(384, 128, (g, cw, ch) => {
+    g.clearRect(0, 0, cw, ch); g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillStyle = 'rgba(92,46,30,.62)'; g.font = '62px Bungee, Impact, sans-serif'; g.fillText(name, cw / 2, 46);
+    g.fillStyle = 'rgba(92,46,30,.7)'; g.font = '700 30px Rubik, sans-serif'; g.fillText(means, cw / 2, 100);
+  });
+  const m = plane(w, w / 3, flat('#ffffff', { map: tex, transparent: true, depthWrite: false }), x, 0.008, z); m.renderOrder = 1;
+  stencils.push(m);
+}
+stencil('ORDERS', 'tasks to do', -4.0, -0.05, 1.5);
+stencil('THE LINE', 'four Claude agents', 0, -1.72, 2.1);
+stencil('PREP', 'plan first', -0.85, 2.25, 1.35);
+stencil('SPICES', 'permissions', 0.72, 2.25, 1.35);
+stencil('OVEN', 'runs the tests', 3.85, -2.25, 1.5);
+stencil('PASS', 'code review', 3.85, 0.4, 1.5);
+stencil('HATCH', 'git merge', 3.85, 2.78, 1.5);
+
+/** The walkthrough's pointer: a fat gold arrow that bobs over the next thing to use, and a ring where to stand. */
+export const beacon = new THREE.Group(); beacon.visible = false; scene.add(beacon);
+{
+  const gold = toon('#ffd23f', { emissive: '#ff9d1f', emissiveIntensity: 0.35, key: 'beacon' });
+  const tip = add(new THREE.ConeGeometry(0.4, 0.5, 14), gold, 0, 0.25, 0, beacon, false); tip.rotation.x = Math.PI;
+  add(new THREE.CylinderGeometry(0.17, 0.17, 0.46, 14), gold, 0, 0.72, 0, beacon, false);
+}
+export const beaconRing = plane(1.7, 1.7, flat('#ffe45e', { map: ringTex, transparent: true, depthWrite: false, toneMapped: false, unique: true }), 0, 0.027, 0); beaconRing.visible = false; beaconRing.renderOrder = 2;
+const shockTex = canvasTex(128, 128, (g) => { g.strokeStyle = '#fff'; g.lineWidth = 16; g.beginPath(); g.arc(64, 64, 52, 0, 7); g.stroke(); });
+const shock = plane(1, 1, flat('#ffc21f', { map: shockTex, transparent: true, depthWrite: false, toneMapped: false, unique: true }), 0, 0.03, 0); shock.visible = false; shock.renderOrder = 2;
+let shockT = 9;
 
 /* ======================= collision and path finding ======================= */
 export const PLAYER_R = 0.3;
@@ -298,13 +361,14 @@ export function findPath(from, to) {
 }
 
 /* ======================= characters ======================= */
-function character({ body = '#fffaf0', apron = null, hat = true, skin = '#f3c9a0', band = null, hair = null, scale = 1.3, scarf = null }) {
+export function character({ body = '#fffaf0', apron = null, hat = true, skin = '#f3c9a0', band = null, hair = null, scale = 1.3, scarf = null, parent = scene }) {
   const g = new THREE.Group(), inner = new THREE.Group(); g.add(inner);
+  const tint = [], skinned = [];
   const shadow = blob(1.15, 1.15, 0, 0, g);
   const feet = [-1, 1].map(s => { const f = ball(0.11, C.ink, 0.15 * s, 0.07, 0.03, inner, 10); f.scale.set(1, 0.65, 1.4); return f; });
   const torso = capsule(0.31, 0.2, body, 0, 0.5, 0, inner);
-  if (apron) { rbox(0.44, 0.4, 0.1, apron, 0, 0.2, 0.25, inner, 0.05); rbox(0.2, 0.14, 0.03, C.cream, 0, 0.3, 0.3, inner, 0.02); }
-  if (scarf) { const s = cyl(0.27, 0.3, 0.1, scarf, 0, 0.72, 0, inner, 16); s.castShadow = false; }
+  if (apron) { tint.push(rbox(0.44, 0.4, 0.1, apron, 0, 0.2, 0.25, inner, 0.05)); rbox(0.2, 0.14, 0.03, C.cream, 0, 0.3, 0.3, inner, 0.02); }
+  if (scarf) { const s = cyl(0.27, 0.3, 0.1, scarf, 0, 0.72, 0, inner, 16); s.castShadow = false; tint.push(s); }
   const hg = new THREE.Group(); hg.position.set(0, 0.78, 0); hg.rotation.x = -0.38; inner.add(hg);
   const headParts = inner.children.length;
   const head = ball(0.36, skin, 0, 1.08, 0, inner, 24);
@@ -319,13 +383,19 @@ function character({ body = '#fffaf0', apron = null, hat = true, skin = '#f3c9a0
   if (hat) {
     cyl(0.25, 0.24, 0.3, '#ffffff', 0, 1.34, 0, inner, 18);
     const top = ball(0.31, '#ffffff', 0, 1.72, 0, inner, 16); top.scale.y = 0.72;
-    if (band) cyl(0.258, 0.25, 0.1, band, 0, 1.36, 0, inner, 18);
+    if (band) tint.push(cyl(0.258, 0.25, 0.1, band, 0, 1.36, 0, inner, 18));
   } else if (hair) { const hr = ball(0.365, hair, 0, 1.15, -0.055, inner, 18); hr.scale.set(1.02, 0.92, 1); }
   // everything from the neck up tips back a little, so faces read from a camera that looks down
   for (const m of inner.children.slice(headParts).filter(m => !hands.includes(m))) { m.position.y -= 0.78; hg.add(m); }
   g.scale.setScalar(scale);
-  scene.add(g);
-  return { g, inner, head, hands, feet, eyes, torso, shadow, squash: 0, squashV: 0, phase: Math.random() * 6, blink: 2 + Math.random() * 3, scale };
+  parent.add(g);
+  skinned.push(head, ...hands);
+  return { g, inner, hg, head, hands, feet, eyes, torso, shadow, tint, skinned, squash: 0, squashV: 0, phase: Math.random() * 6, blink: 2 + Math.random() * 3, scale };
+}
+/** Recolours a chef: apron, hat band and scarf in one colour, and the skin. */
+export function setLook(ch, { color, skin } = {}) {
+  if (color) for (const m of ch.tint) m.material = toon(color);
+  if (skin) for (const m of ch.skinned) m.material = toon(skin);
 }
 /** Squash and stretch: a damped spring every character and prop can be kicked with. */
 export function kick(o, amount = 0.25) { o.squashV = (o.squashV || 0) - amount * 14; }
@@ -340,12 +410,21 @@ function spring(o, dt) {
   o.squash = Math.max(-0.45, Math.min(0.45, x)); o.squashV = v;
   return o.squash;
 }
-function pose(ch, dt, t, { moving = false, hold = false, mood = 'idle', speed = 1 } = {}) {
+export function pose(ch, dt, t, { moving = false, hold = false, mood = 'idle', speed = 1 } = {}) {
   const s = spring(ch, dt);
   ch.inner.scale.set(1 - s * 0.55, 1 + s, 1 - s * 0.55);
   if (moving) ch.phase += dt * 13 * speed;
-  const w = Math.sin(ch.phase), breathe = Math.sin(t * 2.2 + ch.phase) * 0.012;
+  const w = Math.sin(ch.phase), breathe = Math.sin(t * 2.2 + ch.phase) * 0.02;
   ch.inner.position.y = moving ? Math.abs(w) * 0.09 : breathe;
+  // nobody stands still: heads look about, weight shifts from foot to foot, and a cook watches the pot
+  const still = !moving && !reduceMotion, idle = still && (mood === 'idle' || mood === 'wave');
+  const ease = Math.min(1, dt * 6);
+  const lookY = !still ? 0 : mood === 'cooking' ? Math.sin(t * 1.9 + ch.phase) * 0.14 : idle ? Math.sin(t * 0.8 + ch.phase) * 0.3 + Math.sin(t * 0.33 + ch.phase * 2) * 0.22 : 0;
+  ch.hg.rotation.y += (lookY - ch.hg.rotation.y) * ease;
+  ch.hg.rotation.x += ((mood === 'cooking' ? -0.2 : mood === 'stalled' ? 0.12 : mood === 'cheer' ? -0.6 : -0.38) - ch.hg.rotation.x) * ease;
+  ch.hg.rotation.z = !still ? 0 : idle ? Math.sin(t * 0.9 + ch.phase) * 0.06 : mood === 'blocked' ? Math.sin(t * 11) * 0.09 : 0;
+  ch.inner.rotation.z = idle ? Math.sin(t * 1.1 + ch.phase) * 0.035 : 0;
+  ch.torso.scale.y = still ? 1 + Math.sin(t * 2.2 + ch.phase) * 0.03 : 1;
   ch.feet[0].position.z = moving ? 0.03 + w * 0.16 : 0.03; ch.feet[1].position.z = moving ? 0.03 - w * 0.16 : 0.03;
   ch.feet[0].position.y = moving ? 0.07 + Math.max(0, w) * 0.08 : 0.07; ch.feet[1].position.y = moving ? 0.07 + Math.max(0, -w) * 0.08 : 0.07;
   const [l, r] = ch.hands;
@@ -354,7 +433,8 @@ function pose(ch, dt, t, { moving = false, hold = false, mood = 'idle', speed = 
   else if (mood === 'cooking') { set(l, -0.4, 0.62, 0.3); set(r, 0.12 + Math.cos(t * 7) * 0.16, 0.96, 0.62 + Math.sin(t * 7) * 0.12); }
   else if (mood === 'blocked') { set(l, -0.52, 1.25 + Math.sin(t * 11) * 0.14, 0.1); set(r, 0.52, 1.25 + Math.cos(t * 11) * 0.14, 0.1); }
   else if (mood === 'stalled') { set(l, -0.42, 0.34, 0.1); set(r, 0.42, 0.34, 0.1); }
-  else if (mood === 'cheer') { set(l, -0.5, 1.35, 0.05); set(r, 0.5, 1.35, 0.05); }
+  else if (mood === 'cheer') { set(l, -0.5, 1.35 + Math.sin(t * 16) * 0.06, 0.05); set(r, 0.5, 1.35 - Math.sin(t * 16) * 0.06, 0.05); }
+  else if (mood === 'wave') { set(l, -0.45, 0.5, 0.06); set(r, 0.5 + Math.sin(t * 10) * 0.12, 1.32, 0.12); }
   else if (moving) { set(l, -0.45, 0.5 - w * 0.1, 0.06 - w * 0.22); set(r, 0.45, 0.5 + w * 0.1, 0.06 + w * 0.22); }
   else { set(l, -0.45, 0.5 + breathe * 2, 0.06); set(r, 0.45, 0.5 + breathe * 2, 0.06); }
   ch.blink -= dt;
@@ -364,10 +444,29 @@ function pose(ch, dt, t, { moving = false, hold = false, mood = 'idle', speed = 
 }
 
 export const player = Object.assign(character({ apron: '#e5533d', band: '#e5533d', scarf: '#e5533d', scale: 1.22 }), { carry: null, path: null, targetSt: null, act: true, moving: false, dash: 0, dashCool: 0, vx: 0, vz: 0 });
-player.g.position.set(1.6, 0, -0.6);
+player.g.position.set(0, 0, -0.95);
 const carryAnchor = new THREE.Object3D(); carryAnchor.position.set(0, 0.62, 0.52); player.inner.add(carryAnchor);
 const carryWorld = V();
 const agentChefs = new Map();   // chefId -> character
+/** Stands the player on a spot with empty hands and nowhere to go: coming in through the door. */
+export function placePlayer(at, facing = Math.PI) {
+  player.g.position.set(at.x, 0, at.z); player.g.rotation.y = facing;
+  Object.assign(player, { carry: null, path: null, targetSt: null, moving: false, vx: 0, vz: 0, dash: 0 });
+}
+/** What presence.js needs to stand the other people in this kitchen: a chef in their colours, with their name over the hat. */
+export const avatarKit = {
+  make({ look, name, pid }) {
+    const ch = character({ apron: look.color, band: look.color, scarf: look.color, skin: look.skin, scale: 1.22 });
+    ch.g.visible = false; ch.pid = pid;
+    return ch;
+  },
+  pose(ch, dt, t, o) { pose(ch, dt, t, o); },
+  remove(ch) { scene.remove(ch.g); },
+  label(ch, name, t, say) {
+    const text = say?.phrase !== undefined ? PHRASES[say.phrase] : null;
+    label(`av${ch.pid}`, `<div class="who">${esc(name)}${text ? `<i>${esc(text)}</i>` : ''}</div>`, V(ch.g.position.x, 2.5, ch.g.position.z), { pri: 2 });
+  },
+};
 
 /* ======================= things that get carried ======================= */
 /** Moves an object to a named place: a hop with an arc when the place changes, then it stays glued there. */
@@ -402,11 +501,13 @@ const FOODS = ['#f2a03a', '#e5533d', '#57b86a', '#e8c95a', '#c873d6', '#4aa3d8']
 export const foodColor = id => FOODS[id % FOODS.length];
 function plateMesh(o, look) {
   const g = new THREE.Group();
-  const cold = look.cold, tint = c => cold ? '#bfe3f5' : c;
+  const cold = look.cold, tint = c => cold ? '#8fcdf0' : c;
+  // a cold plate sits in a patch of frost, ringed with ice
+  if (cold) { const patch = cyl(0.56, 0.56, 0.012, flat('#dff5ff', { transparent: true, opacity: 0.85 }), 0, -0.035, 0, g, 26); patch.castShadow = false; }
   cyl(0.34, 0.24, 0.07, tint('#fffdf5'), 0, 0, 0, g, 22);
   const food = ball(0.2, look.burnt ? '#40302a' : tint(foodColor(o.id)), 0, 0.1, 0, g, 14); food.scale.y = 0.6;
   if (!look.burnt) { ball(0.07, tint('#57b86a'), 0.09, 0.2, 0.03, g, 8); ball(0.05, tint('#fff1d6'), -0.07, 0.19, -0.05, g, 8); }
-  if (cold) for (let i = 0; i < 6; i++) { const a = i * 1.05; const f = add(new THREE.OctahedronGeometry(0.07), toon('#e8f8ff'), Math.cos(a) * 0.27, 0.1 + (i % 2) * 0.05, Math.sin(a) * 0.27, g, false); f.scale.y = 1.9; f.rotation.z = Math.cos(a) * 0.5; }
+  if (cold) for (let i = 0; i < 8; i++) { const a = i * 0.785 + 0.3, r = 0.36 + (i % 2) * 0.08; const f = add(new THREE.OctahedronGeometry(0.085 + (i % 3) * 0.02), toon('#f4fcff', { emissive: '#9fd8ff', emissiveIntensity: 0.5 }), Math.cos(a) * r, 0.1 + (i % 2) * 0.04, Math.sin(a) * r, g, false); f.scale.y = 2.3; f.rotation.z = Math.cos(a) * 0.45; f.rotation.x = Math.sin(a) * 0.45; }
   if (look.approved) {
     const dome = add(new THREE.SphereGeometry(0.31, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2), toon(cold ? '#bfe3f5' : '#f6c64a'), 0, 0.05, 0, g, false);
     dome.scale.y = 0.9; ball(0.055, toon(cold ? '#e8f8ff' : '#fff1b0'), 0, 0.36, 0, g, 10);
@@ -433,6 +534,26 @@ export const stateWords = o => ({ waiting: o.plan ? 'planned, waiting for a chef
 export const chefIndex = id => G.S.chefs.findIndex(c => c.id === id);
 
 export function setCarry(c) { player.carry = c; kick(player, 0.18); }
+
+/**
+ * Empties the room of everything that belongs to one kitchen's orders: another kitchen is about to be drawn (a visit, the way
+ * home, a fresh kitchen), and order ids mean something else there.
+ */
+export function resetWorld() {
+  for (const cu of customers.values()) scene.remove(cu.ch.g);
+  for (const l of leaving) scene.remove(l.ch.g);
+  for (const t of tickets.values()) scene.remove(t.g);
+  for (const p of plates.values()) scene.remove(p.g);
+  for (const c of coins) scene.remove(c.m);
+  for (const s of strings.values()) { scene.remove(s.mesh); s.mesh.geometry.dispose(); }
+  for (const ch of agentChefs.values()) scene.remove(ch.g);
+  customers.clear(); tickets.clear(); plates.clear(); strings.clear(); agentChefs.clear(); slotOf.clear(); passSlotOf.clear(); backOf.clear();
+  leaving.length = 0; coins.length = 0;
+  Object.assign(local, { board: null, binConfirm: null, hatch: null, booted: false });
+  player.carry = null; player.path = null; player.targetSt = null;
+  for (const st of chefStations) { st.chefId = null; st.heat = 0; st.burn = 0; st.tools = undefined; st.fire.visible = false; st.alarm.material.opacity = 0; st.burner.material.opacity = 0; st.glow.material.opacity = 0; st.soup.visible = st.lid.visible = st.spoon.visible = false; }
+  world.cooking = world.fires = world.smoking = 0; world.cheer = 0;
+}
 
 function freeIndex(map, n) { const used = new Set(map.values()); for (let i = 0; i < n; i++) if (!used.has(i)) return i; return -1; }
 
@@ -528,7 +649,7 @@ export function syncWorld() {
     if (p.key !== key) {
       const g = plateMesh(o, look); g.position.copy(p.g.position); g.visible = p.g.visible; scene.remove(p.g); scene.add(g);
       if (look.approved && p.key[1] === '0') { spawn('star', g.position.clone().add(V(0, 0.4, 0)), ['#ffd75e', '#fff1b0'], { n: 10, up: 1.6, out: 1.8, life: 0.7, grow: 0 }); }
-      if (look.cold && p.key[2] === '0') { spawn('star', g.position.clone().add(V(0, 0.3, 0)), ['#bfe3f5', '#ffffff'], { n: 12, up: 1.2, out: 1.6, life: 0.9, grow: 0 }); emit('sfx', 'frost'); }
+      if (look.cold && p.key[2] === '0') { spawn('star', g.position.clone().add(V(0, 0.3, 0)), ['#bfe3f5', '#ffffff'], { n: 18, up: 1.6, out: 2, life: 1.1, grow: 0, size: 1.3, opacity: 1 }); emit('sfx', 'frost'); popup(`#${o.id} went cold: main moved`, g.position.clone().add(V(-0.4, 0.5, 0)), 'cold'); }
       p.g = g; p.mv.g = g; p.key = key; kick(p.mv, 0.45);
     }
   }
@@ -588,13 +709,20 @@ function platePos(key, out) {
 let emitT = 0;
 const ringHtml = (frac, inner, cls) => `<span class="ic ${cls}" style="--p:${Math.round(frac * 100)}">${inner}</span>`;
 export function animateWorld(dt, t, near) {
-  const S = G.S, focus = S.shift.mode === 'focus', esca = escalation(), now = nowS();
+  const S = G.S, focus = quiet(), esca = escalation(), now = nowS();
   emitT += dt; const tickFx = emitT > 0.1; if (tickFx) emitT = 0;
   carryAnchor.getWorldPosition(carryWorld);
   const carry = player.carry;
+  world.cheer = Math.max(0, world.cheer - dt);
+  const cheering = world.cheer > 0;
 
   // the player
-  pose(player, dt, t, { moving: player.moving, hold: !!carry, speed: player.dash > 0 ? 1.6 : 1 });
+  pose(player, dt, t, { moving: player.moving, hold: !!carry, mood: cheering && !player.moving ? 'cheer' : 'idle', speed: player.dash > 0 ? 1.6 : 1 });
+
+  // main jumps when a plate lands in it, and a ring of light rolls out across the floor
+  const ms = spring(mainSpring, dt); mainG.scale.set(1 - ms * 0.35, 1 + ms, 1 - ms * 0.35);
+  shockT += dt; shock.visible = shockT < 0.7;
+  if (shock.visible) { const f = shockT / 0.7; shock.scale.setScalar(0.6 + f * 5.2); shock.material.opacity = (1 - f) * 0.9; }
 
   // customers
   let queued = 0;
@@ -643,12 +771,18 @@ export function animateWorld(dt, t, near) {
     const age = q ? now - q.createdAt : 0;
     const level = !q ? 0 : age >= esca.fireMs ? 3 : age >= esca.smokeMs ? 2 : 1;
     const isCooking = o?.state === 'cooking' && !q, stalled = o?.state === 'stalled';
-    const mood = q ? 'blocked' : stalled ? 'stalled' : isCooking ? 'cooking' : o?.state === 'at_pass' && o.approved ? 'cheer' : 'idle';
+    // a free chef waves you over while you are carrying a ticket, and turns to watch you walk past
+    const free = !o, wantsTicket = free && carry?.type === 'ticket';
+    const mood = q ? 'blocked' : stalled ? 'stalled' : isCooking ? 'cooking' : cheering || (o?.state === 'at_pass' && o.approved) ? 'cheer' : wantsTicket ? 'wave' : 'idle';
     if (isCooking) cooking++;
     if (level === 3) fires++;
     pose(ch, dt, t, { mood });
-    ch.g.position.y = q && !reduceMotion ? Math.abs(Math.sin(t * (level > 1 ? 9 : 6))) * (level > 1 ? 0.22 : 0.12) : 0;
-    ch.g.rotation.y = q ? Math.sin(t * 3) * 0.3 : stalled ? 0.5 : isCooking ? -0.12 + Math.sin(t * 1.3 + j) * 0.08 : Math.sin(t * 0.6 + j * 2) * 0.25;
+    ch.g.position.y = reduceMotion ? 0 : q ? Math.abs(Math.sin(t * (level > 1 ? 9 : 6))) * (level > 1 ? 0.22 : 0.12) : cheering ? Math.abs(Math.sin(t * 10 + j)) * 0.2 : wantsTicket ? Math.abs(Math.sin(t * 5 + j)) * 0.07 : 0;
+    const toPlayer = Math.atan2(player.g.position.x - st.stand.x, player.g.position.z - st.stand.z);
+    // from the street-end camera a chef who faces the stove is in profile, so everyone turns a little towards it
+    const bias = world.side ? -0.8 : 0;
+    const faceTo = bias + (q ? Math.sin(t * 3) * 0.3 : stalled ? 0.5 : isCooking ? -0.12 + Math.sin(t * 1.3 + j) * 0.08 : free ? (world.side ? 0 : toPlayer * 0.8) : Math.sin(t * 0.6 + j * 2) * 0.25);
+    ch.g.rotation.y += (faceTo - ch.g.rotation.y) * Math.min(1, dt * 6);
     ch.g.rotation.z = stalled ? 0.16 : 0;
 
     const hot = !!o && ['cooking', 'stalled'].includes(o.state);
@@ -663,20 +797,37 @@ export function animateWorld(dt, t, near) {
     const s = spring(st, dt); st.pot.scale.set(1 - s * 0.5, 1 + s, 1 - s * 0.5);
     if (tickFx && isCooking && !focus && Math.random() < 0.7) spawn('puff', st.potPos, '#fffaf0', { spread: 0.3, up: 0.9, life: 1.1, size: 0.9, opacity: 0.6 });
     if (tickFx && stalled && Math.random() < 0.5) spawn('puff', st.potPos, '#5a4a52', { spread: 0.3, up: 0.7, life: 1.6, size: 1.4 });
-    if (tickFx && level >= 2) spawn('puff', st.potPos, level === 3 ? '#3d3238' : '#8a7a82', { spread: 0.35, up: 1.3, life: 1.7, size: level === 3 ? 1.9 : 1.4, grow: 1.2, opacity: 0.75 });
-    if (tickFx && level === 3) spawn('flame', st.potPos.clone().add(V(0, -0.1, 0)), ['#ff7a2a', '#ffc23d', '#ff4a2a'], { n: 3, spread: 0.5, up: 1.7, out: 0.4, life: 0.5, size: 1.5, grow: -0.6, opacity: 0.95 });
+    // smoke is a grey column you can see from the window; fire is flames in the pot, sparks, black smoke and a red floor
+    if (tickFx && level === 2) spawn('puff', st.potPos, ['#a89aa2', '#8a7a82'], { n: 2, spread: 0.3, up: 1.7, out: 0.25, life: 2.1, size: 2.3, grow: 1.5, opacity: 0.78 });
+    if (tickFx && level === 3) {
+      spawn('puff', st.potPos.clone().add(V(0, 0.7, 0)), ['#3a2f36', '#52444c'], { n: 2, spread: 0.4, up: 2.1, out: 0.3, life: 2.2, size: 2.8, grow: 1.6, opacity: 0.8 });
+      spawn('star', st.potPos, ['#ffc23d', '#ff7a2a'], { n: 2, spread: 0.5, up: 3, out: 1.6, life: 0.8, gravity: 4, grow: 0, size: 0.8, opacity: 1 });
+    }
+    st.burn += ((level === 3 ? 1 : 0) - st.burn) * Math.min(1, dt * 5);
+    st.fire.visible = st.burn > 0.03;
+    if (st.fire.visible) {
+      st.fire.scale.setScalar(st.burn);
+      st.fire.children.forEach((f, i) => { const k = reduceMotion ? 1 : 1 + Math.sin(t * (15 + i * 3) + i * 2 + j) * 0.2; f.scale.set(1 + Math.sin(t * 11 + i) * 0.1, k, 1); f.position.y = f.userData.h * k / 2; });
+    }
+    st.alarm.material.opacity = st.burn * (0.5 + Math.sin(t * 9) * 0.22);
 
     // one small sign per chef: who, which model, and what state, readable from across the room
     const tools = o ? o.activity.filter(a => a.kind === 'tool').length : 0;
     if (st.tools !== tools) { if (tools > (st.tools ?? tools)) kick(st, 0.16); st.tools = tools; }
     const frac = o?.assignedAt ? Math.min(1, (now - o.assignedAt) / (o.targetMin * 60000)) : 0;
-    const icon = level === 3 ? ringHtml(1, ICON.flame, 'fire') : level === 2 ? ringHtml(1, ICON.q, 'smoke') : level === 1 ? ringHtml(1, ICON.q, focus ? 'held' : 'ask')
+    const icon = level === 3 ? ringHtml(1, ICON.flame, 'fire') : level === 2 ? ringHtml(1, ICON.smoke, 'smoke') : level === 1 ? ringHtml(1, ICON.q, focus ? 'held' : 'ask')
       : stalled ? ringHtml(1, 'zz', 'stall') : o?.state === 'cooking' ? ringHtml(frac, `#${o.id}`, 'cook') : o?.state === 'testing' ? ringHtml(1, ICON.oven, 'oven')
       : o && ['at_pass', 'merging'].includes(o.state) ? ringHtml(1, ICON.tick, 'done') : ringHtml(0, '', 'free');
-    const sub = q ? mmss(age) : modelName(chef.model);
-    label(`chef${chef.id}`, `<div class="chip" style="--c:${CHEF_COLORS[chef.id] || '#c873d6'}">${icon}<span class="nm"><b>${esc(chef.name)}</b><i>${esc(sub)}</i></span></div>`, V(st.stand.x, 3.0, st.stand.z - 0.35), { cls: level ? `lv${level}` : '', pri: level ? 6 + level : 3, click: st.id });
+    const sub = level === 3 ? `on fire ${mmss(age)}` : level === 2 ? `smoking ${mmss(age)}` : q ? `waiting ${mmss(age)}` : modelName(chef.model);
+    label(`chef${chef.id}`, `<div class="chip" style="--c:${CHEF_COLORS[chef.id] || '#c873d6'}">${icon}<span class="nm"><b>${esc(chef.name)}</b><i>${esc(sub)}</i></span></div>`, world.side ? V(st.stand.x + 0.15, 2.85, st.stand.z) : V(st.stand.x, 3.0, st.stand.z - 0.35), { cls: level ? `lv${level}` : '', pri: level ? 6 + level : 3, click: st.id });
   });
-  world.cooking = cooking; world.fires = focus ? 0 : fires;
+  world.cooking = cooking; world.fires = focus ? 0 : fires; world.smoking = focus ? 0 : S.questions.filter(q => now - q.createdAt >= esca.smokeMs).length;
+
+  // the gate swings out a little while you stand at it
+  if (doorG.visible) {
+    doorSt.swing += ((near === doorSt ? 1 : 0) - doorSt.swing) * Math.min(1, dt * 9);
+    gateL.rotation.y = doorSt.swing * 1.15; gateR.rotation.y = -doorSt.swing * 1.15;
+  }
 
   // the oven
   const inOven = S.orders.filter(o => o.state === 'testing');
@@ -692,6 +843,7 @@ export function animateWorld(dt, t, near) {
   const refire = !!S.rules?.autoRefire;
   lever.rotation.x += ((refire ? -0.75 : 0.75) - lever.rotation.x) * Math.min(1, dt * 14);
   leverKnob.material.color.set(refire ? '#57b86a' : C.red);
+  if (refire) label('lever', `<div class="ovn refire">${ICON.flame}re-fire on</div>`, V(5.42, 2.25, OVEN_Z + 0.34), { pri: 1, click: 'oven' });
   if (inOven.length || baking) label('oven', `<div class="ovn"><span class="spin"></span>${inOven.map(o => `#${o.id}`).join(' ') || 'testing'}</div>`, ovenSt.top.clone().add(V(0, 0.35, 0)), { pri: 4, click: 'oven' });
 
   // tickets
@@ -731,10 +883,11 @@ export function animateWorld(dt, t, near) {
     // what a plate says about itself from across the room
     if (key.startsWith('pass') && arrived && o) {
       const look = plateLook(o), st = passStations[+key.slice(4)], here = near === st;
-      const ic = look.cold ? `<span class="pi cold">${ICON.snow}</span>` : look.approved ? `<span class="pi gold">${ICON.tick}</span>` : look.burnt ? `<span class="pi burnt">${ICON.flame}</span>` : `<span class="pi new">#${o.id}</span>`;
-      label(`plate${id}`, `<div class="pt">${ic}</div>`, st.top.clone().add(V(0.55, 0.95, 0)), { pri: here ? 5 : 2, click: st.id });
+      // an icon and one word: cold beats approved beats burnt, because that is the order they matter in at the hatch
+      const [kind, ic, word] = look.cold ? ['cold', ICON.snow, 'cold'] : look.approved ? ['gold', ICON.tick, 'ship it'] : look.burnt ? ['burnt', ICON.flame, 'tests fail'] : ['new', ICON.eye, 'review'];
+      label(`plate${id}`, `<div class="pt ${kind}"><span class="pi ${kind}">${ic}</span><b>#${o.id} ${word}</b></div>`, st.top.clone().add(V(0.5, 0.6, 0)), { pri: here ? 5 : 2, click: st.id, anchor: 'tl' });
       if (look.burnt && tickFx && Math.random() < 0.25) spawn('puff', p.g.position.clone().add(V(0, 0.25, 0)), '#5a4a52', { up: 0.6, life: 1.1, size: 0.7 });
-      if (look.cold && tickFx && Math.random() < 0.2) spawn('star', p.g.position.clone().add(V(0, 0.5, 0)), '#e8f8ff', { up: -0.3, out: 0.6, life: 0.9, grow: 0, size: 0.6 });
+      if (look.cold && tickFx && Math.random() < 0.45) spawn('puff', p.g.position.clone().add(V(0, 0.25, 0)), '#e3f6ff', { spread: 0.5, up: 0.35, out: 0.5, life: 1.3, size: 1.2, grow: 0.9, opacity: 0.55 });
     }
   }
   beltTex.offset.x -= dt * ([...plates.values()].some(p => p.mv.key === 'out') ? 1.6 : 0.12);
@@ -775,10 +928,24 @@ export function animateWorld(dt, t, near) {
     label('prep', `<div class="pt">${o?.state === 'planning' ? '<span class="pi plan"><span class="spin"></span></span>' : `<span class="pi gold">${ICON.pencil}</span>`}</div>`, prepSt.top.clone().add(V(0, 0.75, 0)), { pri: 3, click: 'prep' });
   }
 }
-export const world = { cooking: 0, fires: 0 };
+export const world = { cooking: 0, fires: 0, smoking: 0, cheer: 0, side: false };
+/** The upright-phone camera looks from the street end: floor lettering would read sideways, and the main crate turns to face it. */
+export function setSide(side) {
+  world.side = side;
+  for (const m of stencils) m.visible = !side;
+  mainG.rotation.y = side ? -Math.PI / 2 : 0;
+}
 
 /** Dust at the player's feet. */
 export function dust(n = 5) { spawn('puff', player.g.position.clone().add(V(0, 0.12, 0)), '#f3e2c0', { n, spread: 0.4, up: 0.5, out: 1.2, life: 0.45, size: 1.1, opacity: 0.7 }); }
 export function sprinkle(pos, color) { spawn('star', pos, [color, '#fff1d6'], { n: 14, spread: 0.3, up: 1.6, out: 1.4, life: 0.8, gravity: 5, grow: 0, size: 0.7 }); }
-export function shipFx() { confetti(hatchSt.top.clone().add(V(0, 0.6, 0))); shake(0.2); }
+/** The ship moment: the crate jumps, confetti from the hatch and from main, a ring of light, and the whole line cheers. */
+export function shipFx() {
+  confetti(hatchSt.top.clone().add(V(0, 0.6, 0)));
+  confetti(V(7.0, 1.7, HATCH_Z));
+  spawn('star', V(7.0, 1.5, HATCH_Z), ['#ffd75e', '#fff1b0', '#8ff0a4'], { n: 18, up: 2.6, out: 3, life: 0.9, grow: 0, gravity: 3, size: 1.3, opacity: 1 });
+  kick(mainSpring, 0.55); world.cheer = 1.5;
+  shock.position.set(hatchSt.ring.x, 0.03, hatchSt.ring.z); shockT = 0;
+  shake(0.2);
+}
 export function chefChar(chefId) { return agentChefs.get(chefId); }

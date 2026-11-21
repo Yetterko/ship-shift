@@ -6,7 +6,28 @@ export const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 export const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /** The latest server snapshot lives in G.S. */
-export const G = { S: null, offset: 0 };
+/** In a town, G.S is the kitchen being drawn, G.own is always yours, and G.visit is { of, relation, rights, owner } while you stand in somebody else's. */
+export const G = { S: null, offset: 0, own: null, visit: null };
+/** What the server will take from you in the kitchen you are standing in. In your own, everything. */
+export const can = right => !G.visit || !!G.visit.rights?.[right];
+/** The route for the kitchen you are standing in: a visitor answers and approves through the town's routes. */
+export function kpath(path) {
+  const v = G.visit; if (!v) return path;
+  let m;
+  if ((m = path.match(/^\/api\/questions\/([\w-]+)\/answer$/))) return `/api/world/kitchens/${v.of}/questions/${m[1]}/answer`;
+  if ((m = path.match(/^\/api\/orders\/(\d+)\/(review|diff)$/))) return `/api/world/kitchens/${v.of}/orders/${m[1]}/${m[2]}`;
+  return path;
+}
+/** Why a visitor may not do that here, in words for a toast or a bubble. */
+export function whyNot(right) {
+  const v = G.visit; if (!v) return '';
+  if (v.sign === 'private') return `${v.owner}'s kitchen is private: visitors can only watch.`;
+  if (right === 'answer') return `Only ${v.owner}'s team can answer here, unless the door says "Help wanted".`;
+  if (right === 'approve') return `Only ${v.owner}'s team can approve at this pass.`;
+  return `You are visiting. Only ${v.owner} can do that.`;
+}
+/** True in your own kitchen: not in the park and not visiting. town.js keeps body[data-zone]. */
+export const atHome = () => (document.body.dataset.zone || 'kitchen') === 'kitchen';
 export const nowS = () => Date.now() + G.offset;
 export const orderOf = id => G.S?.orders.find(o => o.id === id);
 export const chefById = id => G.S?.chefs.find(c => c.id === id);
@@ -40,9 +61,11 @@ const listeners = {};
 export const on = (name, fn) => { (listeners[name] ||= []).push(fn); };
 export const emit = (name, ...args) => { for (const fn of listeners[name] || []) fn(...args); };
 
-export async function api(path, body = {}) {
+export async function api(path, body = {}, { quiet = false } = {}) {
   const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401) { emit('gone'); throw new Error('The kitchen has closed'); }
+  if (!res.ok && quiet) throw new Error(data.error || String(res.status));
   if (!res.ok) { toast(data.error || `Request failed (${res.status})`, 'bad'); emit('sfx', 'err'); throw new Error(data.error || String(res.status)); }
   return data;
 }
@@ -89,5 +112,7 @@ export const ICON = {
   hat: svg('<path d="M7 14.500a4.200 4.200 0 0 1 1-8.200 4.600 4.600 0 0 1 8 0 4.200 4.200 0 0 1 1 8.200V19.500H7z" fill="none" stroke="currentColor" stroke-width="2.400" stroke-linejoin="round"/><path d="M7 16.500h10" stroke="currentColor" stroke-width="2"/>'),
   eye: svg('<path d="M2.500 12c2.500-4.500 5.700-6.500 9.500-6.500s7 2 9.500 6.500c-2.500 4.500-5.700 6.500-9.500 6.500s-7-2-9.500-6.500z" fill="none" stroke="currentColor" stroke-width="2.400" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="currentColor"/>'),
   rocket: svg('<path d="M12 2.500c3.500 2.500 5 6 5 9.500l-2 4H9l-2-4c0-3.500 1.500-7 5-9.500z" fill="none" stroke="currentColor" stroke-width="2.400" stroke-linejoin="round"/><circle cx="12" cy="10" r="1.900" fill="currentColor"/><path d="M10 19.500l2 2.500 2-2.500" fill="none" stroke="currentColor" stroke-width="2.400" stroke-linecap="round" stroke-linejoin="round"/>'),
+  board: svg('<rect x="3.500" y="4" width="4.600" height="16" rx="1.300" fill="currentColor"/><rect x="9.700" y="4" width="4.600" height="10.500" rx="1.300" fill="currentColor"/><rect x="15.900" y="4" width="4.600" height="13.500" rx="1.300" fill="currentColor"/>'),
+  restart: svg('<path d="M5.500 12a6.500 6.500 0 1 0 2.200-4.900" fill="none" stroke="currentColor" stroke-width="2.800" stroke-linecap="round"/><path d="M4.500 4.500v4.200h4.200" fill="none" stroke="currentColor" stroke-width="2.800" stroke-linecap="round" stroke-linejoin="round"/>'),
   pencil: svg('<path d="M4 20l1-4.500L16.500 4l3.500 3.500L8.500 19z" fill="none" stroke="currentColor" stroke-width="2.400" stroke-linejoin="round"/>'),
 };

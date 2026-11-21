@@ -10,7 +10,8 @@ import { recipeFor, mergeMain } from './sim-scripts.mjs';
  *   and, when the tool reads or writes one file inside the worktree, `file` (relative, forward slashes).
  * askHuman({ kind: 'permission'|'question', toolName, input, questions, reason }) resolves to
  *   { allow: boolean, message?: string, answers?: Record<string,string> }.
- * order is { id, title } for the order being cooked. Only the simulated chef uses it, to pick its recipe.
+ * order is { id, title, mainBranch } for the order being cooked. Only the simulated chef uses it, to pick its recipe
+ *   and to know which branch a conflict run merges in.
  */
 
 const READ_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'TodoWrite', 'WebFetch', 'WebSearch', 'ToolSearch']);
@@ -176,12 +177,35 @@ export const realDriver = {
   },
 };
 
+/**
+ * Kitchen ranks. Each is a model, and a wage that follows the model's real price: the wage is the model's output price
+ * per million tokens divided by 100, in dollars per game minute of cooking ($40, $20, $10 and $0.50 per million).
+ * The sim* numbers are how a simulated chef of that rank behaves, so the trade-off is honest without spending anything:
+ *   slow   multiplies how long each step takes
+ *   ask    multiplies the chance of each scripted question
+ *   extra  the chance of one more "is this the right place?" question before starting
+ *   slip   the chance that a first attempt leaves a failing test behind
+ *   first  whether the scripted Overtime order is right first time (it fails once for every rank below Head Chef)
+ */
+export const RANKS = [
+  { id: 'head', label: 'Head Chef', model: 'claude-fable-5-2', wage: 0.4, sim: { slow: 1.5, ask: 0.4, extra: 0, slip: 0, first: true } },
+  { id: 'sous', label: 'Sous Chef', model: 'claude-opus-5-5', wage: 0.2, sim: { slow: 1, ask: 1, extra: 0, slip: 0, first: false } },
+  { id: 'line', label: 'Line Cook', model: 'claude-sonnet-5-5', wage: 0.1, sim: { slow: 0.8, ask: 1, extra: 0.3, slip: 0.25, first: false } },
+  { id: 'commis', label: 'Commis', model: 'claude-haiku-5-5', wage: 0.005, sim: { slow: 0.55, ask: 1, extra: 0.8, slip: 0.6, first: false } },
+];
+export const DEFAULT_RANK = 'sous';
+export const rankOf = id => RANKS.find(r => r.id === id) || null;
+
+// A slip is one real failing test, left in the worktree by a junior chef's first attempt and removed on their next run.
+const SLIP_FILE = 'test/slip.test.js';
+const slipTest = title => `import test from 'node:test';\nimport assert from 'node:assert/strict';\n\n// Left behind by a first attempt that was not finished.\ntest('the change for ${JSON.stringify(title).slice(1, -1).replace(/'/g, '')} is finished', () => {\n  assert.fail('half-finished: this case was written before the code that makes it pass');\n});\n`;
+
 /** What a run is being asked to do, read from the kitchen's own prompts. */
 function runKind(prompt, resume) {
   const called = prompt.match(/The head chef called out: (.*)/);
   if (called) return { kind: 'steer', note: called[1].trim() };
-  const merge = prompt.match(/git merge ([^\s`]+)/);
-  if (merge) return { kind: 'conflict', note: '', mainBranch: merge[1] };
+  // Only the kind comes from the prompt. The branch to merge comes from the kitchen, never from text a visitor may have typed.
+  if (/git merge /.test(prompt)) return { kind: 'conflict', note: '' };
   if (!resume) return { kind: 'first', note: '' };
   const fed = prompt.match(/Feedback:\n([\s\S]*?)(\n\n|$)/);
   return { kind: 'feedback', note: fed ? fed[1].trim() : '' };
@@ -218,7 +242,8 @@ const genericRecipe = {
  */
 export const simDriver = {
   name: 'sim',
-  async run({ cwd, prompt, resume, readOnly, signal, onEvent, askHuman, order }) {
+  async run({ cwd, prompt, resume, readOnly, signal, onEvent, askHuman, order, rank }) {
+    const habits = (rankOf(rank) || rankOf(DEFAULT_RANK)).sim;
     const wait = ms => new Promise((res, rej) => {
       if (signal?.aborted) return rej(new Error('Stopped'));
       const stop = () => { clearTimeout(t); rej(new Error('Stopped')); };
@@ -228,12 +253,13 @@ export const simDriver = {
     const stopIfAborted = () => { if (signal?.aborted) throw new Error('Stopped'); };
     const sessionId = resume || 'sim-' + Math.random().toString(36).slice(2, 10);
     onEvent({ kind: 'session', sessionId });
-    const speed = Number(process.env.SHIP_SIM_SPEED) > 0 ? Number(process.env.SHIP_SIM_SPEED) : 1;
+    // A Head Chef takes their time and a Commis rushes.
+    const speed = (Number(process.env.SHIP_SIM_SPEED) > 0 ? Number(process.env.SHIP_SIM_SPEED) : 1) / habits.slow;
     const title = order?.title || (prompt.match(/^Order #\d+ \(\w\): (.*)$/m) || [])[1] || prompt.split('\n').find(l => l.trim()) || 'order';
     const abs = rel => path.join(cwd, ...rel.split('/'));
     const ctx = {
-      cwd, prompt, title, mainBranch: 'main', ...runKind(prompt, resume),
-      askChance: 1,
+      cwd, prompt, title, ...runKind(prompt, resume), mainBranch: order?.mainBranch || 'main',
+      askChance: 1, rank: rankOf(rank)?.id || DEFAULT_RANK, firstTryRight: habits.first,
       step: async (tool, text, { file, ms = 900 } = {}) => { stopIfAborted(); onEvent({ kind: 'tool', tool, text, file }); await wait(ms / speed); },
       say: text => { if (text) onEvent({ kind: 'text', text }); },
       read: rel => fs.readFile(abs(rel), 'utf8').then(t => t.replace(/\r\n/g, '\n'), () => null),
@@ -255,7 +281,7 @@ export const simDriver = {
       let recipe = recipeFor(title);
       if (recipe && !(await recipe.applies(ctx))) recipe = null;
       const asked = process.env.SHIP_SIM_ASK;
-      ctx.askChance = asked !== undefined && asked !== '' ? Number(asked) : recipe ? 1 : 0.5;
+      ctx.askChance = (asked !== undefined && asked !== '' ? Number(asked) : recipe ? 1 : 0.5) * habits.ask;
       if (readOnly) {
         const file = recipe?.planFile || 'src/pay.js';
         await ctx.step('Glob', 'looks for src/**/*.js');
@@ -263,7 +289,23 @@ export const simDriver = {
         await ctx.step('Grep', 'searches for shiftHours');
         return { sessionId, summary: recipe?.plan || `Plan:\n1. Find where the order touches the code.\n2. Change the smallest function that does it.\n3. Add a test per case named in the order.\n4. Run npm test.`, costUsd: 0, turns: 3, isError: false };
       }
-      const summary = await (recipe || genericRecipe).run(ctx);
+      // A junior chef asks before they start, more often than not.
+      const set = v => (v !== undefined && v !== '' ? Number(v) : null);
+      if (ctx.kind === 'first' && Math.random() < (set(asked) ?? 1) * habits.extra) {
+        const pick = await ctx.ask({ question: `Before I start on "${title.slice(0, 60)}": should I change the existing code, or add a new file next to it?`, header: 'Where', options: [{ label: 'Change what is there', description: 'Edit the function that already does this' }, { label: 'Add a new file', description: 'Leave the existing code alone' }] });
+        ctx.say(pick ? `Right: ${pick.toLowerCase()}.` : 'No answer. I will change what is there.');
+      }
+      // The slip from the last attempt is cleared before anything else: that is the fix.
+      const slipped = (await ctx.read(SLIP_FILE)) != null;
+      if (slipped) { ctx.say('The half-finished test from my first attempt is still there. Finishing it properly.'); await fs.rm(abs(SLIP_FILE), { force: true }); onEvent({ kind: 'tool', tool: 'Edit', text: `removes ${SLIP_FILE}`, file: SLIP_FILE }); }
+      let summary = await (recipe || genericRecipe).run(ctx);
+      // And a first attempt may leave one, unless the recipe already fails on its own (Overtime does, below Head Chef).
+      const hasTests = await fs.stat(abs('test')).then(st => st.isDirectory(), () => false);
+      const failsAnyway = recipe?.failsFirst && !habits.first;
+      if (ctx.kind === 'first' && !slipped && hasTests && !failsAnyway && habits.slip > 0 && Math.random() < (set(process.env.SHIP_SIM_SLIP) ?? habits.slip)) {
+        await ctx.edit(SLIP_FILE, slipTest(title), `writes ${SLIP_FILE}`, 600, 'Write');
+        summary += ' I added a test for one more case and ran out of time before making it pass.';
+      }
       return { sessionId, summary, costUsd: 0, turns: 6, isError: false };
     } catch (e) {
       return { sessionId, summary: '', costUsd: 0, turns: 0, isError: true, error: e.message };

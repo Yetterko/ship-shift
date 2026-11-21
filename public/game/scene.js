@@ -11,8 +11,10 @@ export const stage = $('stage');
 // Sharp enough on a retina laptop without drawing four times the pixels: the ratio is capped, and adapt() lowers it when frames run slow.
 const params = new URLSearchParams(location.search);
 const MAX_PIXEL_RATIO = 1.5;
-export const quality = { pr: Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO), level: 0, outline: true, fps: 60, fixed: !!navigator.webdriver || params.get('quality') === 'high' };
-if (params.get('quality') === 'low') { quality.pr = 1; quality.fixed = true; }
+// A phone starts one rung down the ladder (smaller shadow map): its screen is small and its GPU is not a laptop's.
+export const mobile = matchMedia('(pointer: coarse)').matches || /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+export const quality = { pr: Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO), level: mobile ? 1 : 0, outline: true, fps: 60, lost: false, mobile, fixed: !!navigator.webdriver || params.get('quality') === 'high' };
+if (params.get('quality') === 'low') { quality.pr = 1; quality.level = 2; quality.outline = false; quality.fixed = true; }
 export const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(quality.pr);
 renderer.shadowMap.enabled = true;
@@ -21,6 +23,9 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.18;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 stage.prepend(renderer.domElement);
+// A phone that takes the GPU away (another app, a locked screen) gives it back later: keep the page, skip frames until then.
+renderer.domElement.addEventListener('webglcontextlost', e => { e.preventDefault(); quality.lost = true; });
+renderer.domElement.addEventListener('webglcontextrestored', () => { quality.lost = false; resize(); });
 
 export const effect = new OutlineEffect(renderer, { defaultThickness: 0.0042, defaultColor: [0.2, 0.11, 0.07], defaultAlpha: 1 });
 export const scene = new THREE.Scene();
@@ -35,6 +40,7 @@ key.castShadow = true;
 key.shadow.mapSize.set(2048, 2048);
 Object.assign(key.shadow.camera, { left: -10, right: 10, top: 8, bottom: -8, near: 2, far: 32 });
 key.shadow.bias = -0.0006; key.shadow.normalBias = 0.035; key.shadow.radius = 3;
+if (quality.level >= 1) key.shadow.mapSize.set(1024, 1024);
 scene.add(key);
 
 /* ---------- materials ---------- */
@@ -113,30 +119,53 @@ export function signTex(w, h, paint) { const t = canvasTex(w, h, paint); signs.p
 document.fonts?.ready.then(() => Promise.all([document.fonts.load('40px Bungee'), document.fonts.load('700 30px Rubik')])).then(() => { for (const t of signs) t.userData.redraw(); }).catch(() => {});
 
 /* ---------- camera: fits the room into the free part of the stage ---------- */
-const DIR = V(0, 15, 10.4).normalize();
+// Two ways to look at the room. From the front it is wide, which suits a laptop and a phone on its side. A phone held upright
+// looks from the street end instead, so the long side of the room runs up the screen and everything is nearly twice the size.
+const DIRS = { front: V(0, 15, 10.4).normalize(), side: V(-10.4, 15, 0).normalize() };
+let DIR = DIRS.front;
 const CENTRE = V(-0.2, 0, -0.35);
-const FIT = [];
-for (const x of [-7.75, 7.6]) for (const [y, z] of [[0, -4.9], [2.55, -4.9], [0, 3.95], [0.6, 3.95]]) FIT.push(V(x, y, z));
-const view = { dist: 24, sx: 0, sy: 0, tDist: 24, tsx: 0, tsy: 0, dock: 0, shake: 0, shakeAmp: 0, snap: true, calm: false, top: 58 };
+const FITS = { front: [], side: [] };
+for (const x of [-7.75, 7.6]) for (const [y, z] of [[0, -4.9], [2.55, -4.9], [0, 3.95], [0.6, 3.95]]) FITS.front.push(V(x, y, z));
+for (const z of [-5.3, 3.9]) for (const [x, y] of [[-6.9, 0], [6.4, 0], [6.4, 2.1], [7.6, 1.3]]) FITS.side.push(V(x, y, z));
+// follow: { x0, x1, z0, z1 } while the camera follows the player across a place bigger than the screen (the park), else null.
+// wide: the whole of that place at once.
+const view = { dist: 24, sx: 0, sy: 0, tDist: 24, tsx: 0, tsy: 0, dock: 0, dockB: 0, shake: 0, shakeAmp: 0, snap: true, calm: false, top: 58, side: false, follow: null, wide: false, spanX: 16, spanZ: 9, pad: { l: 10, r: 10, t: null, b: 8 } };
+const topOf = () => view.pad.t ?? view.top;
+/** The street-end camera is for the kitchen on an upright phone. A followed place is always seen from the front. */
+export const isSide = () => view.side && !view.follow;
 const look = CENTRE.clone();
 const pv = V();
 function place(dist, target) {
-  camera.position.copy(target).addScaledVector(DIR, dist);
+  camera.position.copy(target).addScaledVector(view.follow ? DIRS.front : DIR, dist);
   camera.lookAt(target); camera.updateMatrixWorld();
 }
+const FOLLOW_SIN = DIRS.front.y;          // how steeply the camera looks down: screen height to depth of ground
+const followCentre = V();
 function solveFit() {
   const w = stage.clientWidth, h = stage.clientHeight;
   if (!w || !h) return;
-  const free = { l: 10, r: w * (1 - view.dock) - 10, t: view.top + 4, b: h - 8 };
+  const f = view.follow;
+  const FIT = f ? [] : view.side ? FITS.side : FITS.front;
+  const centre = f ? followCentre.set((f.x0 + f.x1) / 2, 0, (f.z0 + f.z1) / 2) : CENTRE;
+  if (f) for (const x of [f.x0, f.x1]) for (const [y, z] of [[0, f.z0], [f.top ?? 3, f.z0], [0, f.z1]]) FIT.push(V(x, y, z));
+  const free = { l: view.pad.l, r: w * (1 - view.dock) - view.pad.r, t: topOf() + 4, b: h * (1 - view.dockB) - view.pad.b };
   camera.clearViewOffset(); camera.aspect = w / h; camera.updateProjectionMatrix();
-  let lo = 8, hi = 80, box = null;
+  if (f && !view.wide) {
+    // about 16 units of ground across a wide screen, about 10 across an upright phone, and the player in the middle of the free part
+    const tanH = Math.tan(camera.fov * Math.PI / 360), across = w >= h ? 16 : 10;
+    view.tDist = clamp(across / (2 * tanH * (w / h)), 15, 40);
+    view.spanX = 2 * view.tDist * tanH * (w / h); view.spanZ = 2 * view.tDist * tanH / FOLLOW_SIN;
+    view.tsx = w / 2 - (free.l + free.r) / 2; view.tsy = h / 2 - (free.t + free.b) / 2;
+    return;
+  }
+  let lo = 8, hi = 220, box = null;
   const measure = dist => {
-    place(dist, CENTRE);
+    place(dist, centre);
     const b = { x0: 1e9, x1: -1e9, y0: 1e9, y1: -1e9 };
     for (const p of FIT) { pv.copy(p).project(camera); const x = (pv.x + 1) / 2 * w, y = (1 - pv.y) / 2 * h; b.x0 = Math.min(b.x0, x); b.x1 = Math.max(b.x1, x); b.y0 = Math.min(b.y0, y); b.y1 = Math.max(b.y1, y); }
     return b;
   };
-  for (let i = 0; i < 22; i++) {
+  for (let i = 0; i < 25; i++) {
     const mid = (lo + hi) / 2; box = measure(mid);
     if (box.x1 - box.x0 <= free.r - free.l && box.y1 - box.y0 <= free.b - free.t) hi = mid; else lo = mid;
   }
@@ -153,7 +182,14 @@ export function resize() {
 }
 addEventListener('resize', resize);
 /** The review panel docks over this fraction of the stage; the kitchen slides and shrinks to stay in view. */
-export function setDock(frac) { if (view.dock !== frac) { view.dock = frac; solveFit(); } }
+export function setDock(frac, bottom = 0) { if (view.dock !== frac || view.dockB !== bottom) { view.dock = frac; view.dockB = bottom; solveFit(); } }
+/** Which way the camera looks, and how much of each edge the HUD and the touch controls cover. */
+export function setLayout({ side = false, pad }) {
+  const turned = view.side !== side;
+  view.side = side; DIR = side ? DIRS.side : DIRS.front; Object.assign(view.pad, pad);
+  solveFit(); if (turned) view.snap = true;
+  for (const L of labels.values()) L.w = 0;
+}
 /** Presenter mode: the camera stops following and shaking, and the room leaves space for a taller HUD. */
 export function setCalm(calm, top = 58) { view.calm = calm; view.top = top; solveFit(); for (const L of labels.values()) L.w = 0; }
 export function shake(amp = 0.16) {
@@ -161,13 +197,23 @@ export function shake(amp = 0.16) {
   if (reduceMotion || view.calm) return;
   view.shake = 0.15; view.shakeAmp = amp;
 }
+const want = V();
 export function updateCamera(dt, focus) {
-  const k = view.snap ? 1 : 1 - Math.exp(-dt * 7);
+  const snap = view.snap, k = snap ? 1 : 1 - Math.exp(-dt * 7);
   view.snap = false;
   view.dist += (view.tDist - view.dist) * k; view.sx += (view.tsx - view.sx) * k; view.sy += (view.tsy - view.sy) * k;
-  // eased toward the player, so the room breathes without ever scrolling; less when the review panel narrows the view
-  const k10 = view.calm ? 0 : view.dock ? 0.02 : 0.07;
-  look.lerp(V(CENTRE.x + (focus.x - CENTRE.x) * k10, 0, CENTRE.z + (focus.z - CENTRE.z) * k10), 1 - Math.exp(-dt * 5));
+  const f = view.follow;
+  if (f && view.wide) want.copy(followCentre);
+  else if (f) {
+    // the player stays in the middle until the edge of the place comes into view, then the camera stops and they walk on
+    const mx = Math.max(0, (f.x1 - f.x0 - view.spanX) / 2 + 1.5), mz = Math.max(0, (f.z1 - f.z0 - view.spanZ) / 2 + 1.5), cx = (f.x0 + f.x1) / 2, cz = (f.z0 + f.z1) / 2;
+    want.set(clamp(focus.x, cx - mx, cx + mx), 0, clamp(focus.z, cz - mz, cz + mz));
+  } else {
+    // eased toward the player, so the room breathes without ever scrolling; less when the review panel narrows the view
+    const k10 = view.calm ? 0 : view.dock ? 0.02 : 0.07;
+    want.set(CENTRE.x + (focus.x - CENTRE.x) * k10, 0, CENTRE.z + (focus.z - CENTRE.z) * k10);
+  }
+  if (snap) look.copy(want); else look.lerp(want, 1 - Math.exp(-dt * (f ? 6 : 5)));
   place(view.dist, look);
   if (view.shake > 0) {
     view.shake -= dt; const a = view.shakeAmp * Math.max(0, view.shake / 0.15);
@@ -177,7 +223,24 @@ export function updateCamera(dt, focus) {
   camera.setViewOffset(w, h, Math.round(view.sx), Math.round(view.sy), w, h);
   camera.updateMatrixWorld();
 }
-export function render() { if (quality.outline) effect.render(scene, camera); else renderer.render(scene, camera); }
+/* ---------- scenes: the kitchen, and whatever else is added (the park). Only the active one is drawn. ---------- */
+const scenes = { kitchen: scene };
+let active = scene;
+export function addScene(name, s) { scenes[name] = s; }
+/** Switches what is drawn. follow: the bounds of a place the camera should follow the player across, or null to fit the kitchen. */
+export function setScene(name, { follow = null } = {}) {
+  active = scenes[name] || scene;
+  view.follow = follow; view.wide = false;
+  solveFit(); view.snap = true;
+  for (const L of labels.values()) L.w = 0;
+}
+export const sceneName = () => Object.keys(scenes).find(k => scenes[k] === active);
+/** The whole followed place at once, or back to following. */
+export function setOverview(on) { if (!view.follow || view.wide === !!on) return; view.wide = !!on; solveFit(); }
+export const isOverview = () => view.wide;
+// the outline effect draws the scene twice, so the count is kept for the whole frame (nextFrame resets it), not for the last pass
+renderer.info.autoReset = false;
+export function render() { if (quality.lost) return; if (quality.outline) effect.render(active, camera); else renderer.render(active, camera); }
 
 /* ---------- frame rate: measured every two seconds; a slow machine gives up pixels, then shadow detail, then outlines ---------- */
 let qSince = performance.now(), qFrames = 0, qWarm = 2;
@@ -190,9 +253,13 @@ export function adapt() {
   quality.fps = Math.round(fps);
   if (qWarm > 0) { qWarm--; return; }            // the first seconds compile shaders
   if (quality.fixed || document.hidden || fps >= 42) return;
+  // Pixels first, then shadow detail. Outlines, shadows and a soft picture only go when it cannot hold 30, so a phone
+  // that the system caps at 30 frames keeps its outlines.
   if (quality.pr > 1) { quality.pr = Math.max(1, quality.pr - 0.25); renderer.setPixelRatio(quality.pr); resize(); }
   else if (quality.level === 0) { quality.level = 1; key.shadow.mapSize.set(1024, 1024); key.shadow.map?.dispose(); key.shadow.map = null; }
-  else if (quality.level === 1 && fps < 30) { quality.level = 2; quality.outline = false; }
+  else if (quality.level === 1 && fps < 27) { quality.level = 2; quality.outline = false; }
+  else if (quality.level === 2 && fps < 26) { quality.level = 3; key.castShadow = false; }
+  else if (quality.level === 3 && fps < 24) { quality.level = 4; quality.pr = 0.75; renderer.setPixelRatio(quality.pr); resize(); }
   qWarm = 1;
 }
 export const drawCalls = () => renderer.info.render.calls;
@@ -234,7 +301,7 @@ export function stepParticles(dt) {
 const host = $('labels');
 const labels = new Map();
 let frameNo = 0;
-export const nextFrame = () => ++frameNo;
+export const nextFrame = () => { renderer.info.reset(); return ++frameNo; };
 /** pri: higher wins a collision. anchor: 'top' hangs the label below its point instead of above it. */
 export function label(key, html, pos, { cls = '', pri = 1, click = null, anchor = 'bottom' } = {}) {
   let L = labels.get(key);
@@ -259,13 +326,14 @@ export function placeLabels() {
   for (const L of live) {
     toScreen(L.pos, scr);
     const ax = L.anchor === 'tl' ? scr.x : L.anchor === 'tr' ? scr.x - L.w : scr.x - L.w / 2, ay = L.anchor === 'bottom' ? scr.y - L.h : scr.y;
-    const top = view.top;
-    const r = { x: clamp(ax, 6, Math.max(6, w - L.w - 6)), y: clamp(ay, top, Math.max(top, h - L.h - 6)), w: L.w, h: L.h };
+    const top = topOf();
+    const right = w * (1 - view.dock) - 6, low = h * (1 - view.dockB) - 6;
+    const r = { x: clamp(ax, 6, Math.max(6, right - L.w)), y: clamp(ay, top, Math.max(top, low - L.h)), w: L.w, h: L.h };
     let ok = !hits(r);
     for (const [dx, dy] of [[0, -1], [0, 1], [1, 0], [-1, 0]]) {
       if (ok) break;
       const t = { ...r, x: r.x + dx * (L.w * 0.6 + 6), y: r.y + dy * (L.h + 5) };
-      if (t.x >= 6 && t.y >= top && t.x + t.w <= w - 6 && t.y + t.h <= h - 6 && !hits(t)) { r.x = t.x; r.y = t.y; ok = true; }
+      if (t.x >= 6 && t.y >= top && t.x + t.w <= right && t.y + t.h <= low && !hits(t)) { r.x = t.x; r.y = t.y; ok = true; }
     }
     L.el.classList.toggle('hid', !ok);
     if (!ok) continue;

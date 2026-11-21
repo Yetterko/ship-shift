@@ -6,9 +6,40 @@ import path from 'node:path';
 const pexecFile = promisify(execFile);
 const pexec = promisify(exec);
 
+// Git refused because another git process holds a lock in the same repository: the index, a ref, or packed-refs.
+// Nothing was changed, so the same command can simply be tried again.
+const LOCKED = /.lock': File exists|Unable to create '.*.lock'|cannot lock ref|could not lock|unable to lock|Another git process seems to be running/i;
+const LOCK_TRIES = 6;
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+/** Runs git, trying again a few times when the only problem is somebody else's lock. Rejects with execFile's own error. */
+async function run(cwd, args) {
+  for (let attempt = 1; ; attempt++) {
+    try { return await pexecFile('git', args, { cwd, maxBuffer: 32 * 1024 * 1024, windowsHide: true }); }
+    catch (e) {
+      if (attempt >= LOCK_TRIES || !LOCKED.test(`${e.stderr || ''}${e.message || ''}`)) throw e;
+      await pause(40 * attempt + Math.random() * 40);
+    }
+  }
+}
+
+// One at a time per repository for everything that writes the main checkout's index or the shared refs and worktree list:
+// adding and removing a worktree, deleting a branch, and merging into main. A kitchen hands out tickets while other plates
+// ship, and two of those at once can leave one of them with "index.lock: File exists" or a half-finished merge.
+const queues = new Map();
+function serial(repo, fn) {
+  const key = path.resolve(repo);
+  const before = queues.get(key) || Promise.resolve();
+  const mine = before.then(fn, fn);
+  const tail = mine.catch(() => {});
+  queues.set(key, tail);
+  tail.then(() => { if (queues.get(key) === tail) queues.delete(key); });
+  return mine;
+}
+
 export async function git(cwd, args, { allowFail = false } = {}) {
   try {
-    const { stdout } = await pexecFile('git', args, { cwd, maxBuffer: 32 * 1024 * 1024, windowsHide: true });
+    const { stdout } = await run(cwd, args);
     return stdout.trimEnd();
   } catch (e) {
     if (allowFail) return null;
@@ -30,16 +61,20 @@ export async function head(repo, ref = 'HEAD') {
 }
 
 /** Creates a branch from the main branch's tip and checks it out in its own worktree. */
-export async function addWorktree(repo, dir, branch, base) {
-  await fs.mkdir(path.dirname(dir), { recursive: true });
-  await git(repo, ['worktree', 'add', '-b', branch, dir, base]);
+export function addWorktree(repo, dir, branch, base) {
+  return serial(repo, async () => {
+    await fs.mkdir(path.dirname(dir), { recursive: true });
+    await git(repo, ['worktree', 'add', '-b', branch, dir, base]);
+  });
 }
 
-export async function removeWorktree(repo, dir, branch) {
-  await git(repo, ['worktree', 'remove', '--force', dir], { allowFail: true });
-  await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
-  await git(repo, ['worktree', 'prune'], { allowFail: true });
-  if (branch) await git(repo, ['branch', '-D', branch], { allowFail: true });
+export function removeWorktree(repo, dir, branch) {
+  return serial(repo, async () => {
+    await git(repo, ['worktree', 'remove', '--force', dir], { allowFail: true });
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    await git(repo, ['worktree', 'prune'], { allowFail: true });
+    if (branch) await git(repo, ['branch', '-D', branch], { allowFail: true });
+  });
 }
 
 /** Commits everything the agent left in its worktree. Returns true when there was something to commit. */
@@ -72,13 +107,17 @@ export async function behindBy(repo, mainBranch, branch) {
 }
 
 /** Merges the branch into main in the main checkout. Returns { ok, conflict }. */
-export async function mergeIntoMain(repo, mainBranch, branch, message) {
+export function mergeIntoMain(repo, mainBranch, branch, message) {
+  return serial(repo, () => mergeNow(repo, mainBranch, branch, message));
+}
+
+async function mergeNow(repo, mainBranch, branch, message) {
   const cur = await currentBranch(repo);
   if (cur !== mainBranch) throw new Error(`The main checkout is on ${cur}, expected ${mainBranch}`);
   const dirty = await git(repo, ['status', '--porcelain', '--untracked-files=no']);
   if (dirty) throw new Error('The main checkout has uncommitted changes. Commit or stash them before shipping');
   try {
-    await pexecFile('git', ['-c', 'user.name=Ship Shift', '-c', 'user.email=pass@ship-shift.local', 'merge', '--no-ff', '-m', message, branch], { cwd: repo, windowsHide: true });
+    await run(repo, ['-c', 'user.name=Ship Shift', '-c', 'user.email=pass@ship-shift.local', 'merge', '--no-ff', '-m', message, branch]);
     return { ok: true };
   } catch (e) {
     await git(repo, ['merge', '--abort'], { allowFail: true });
@@ -86,8 +125,20 @@ export async function mergeIntoMain(repo, mainBranch, branch, message) {
   }
 }
 
+// At most four ovens run at once across every kitchen on this server, so a full town does not starve the machine.
+const OVENS = 4;
+let ovens = 0;
+const ovenQueue = [];
+const ovenFree = () => { ovens--; ovenQueue.shift()?.(); };
+const ovenTaken = () => (ovens < OVENS ? (ovens++, Promise.resolve()) : new Promise(resolve => ovenQueue.push(() => { ovens++; resolve(); })));
+
 /** Runs the project's test command. The oven. */
 export async function runTests(dir, cmd) {
+  await ovenTaken();
+  try { return await runTestsNow(dir, cmd); } finally { ovenFree(); }
+}
+
+async function runTestsNow(dir, cmd) {
   const started = Date.now();
   try {
     const { stdout, stderr } = await pexec(cmd, { cwd: dir, timeout: 180_000, maxBuffer: 8 * 1024 * 1024, windowsHide: true });
@@ -102,7 +153,7 @@ const tail = s => (s.length > 6000 ? '…' + s.slice(-6000) : s);
 /** Runs git and returns stdout with the exit code, for commands where a non-zero exit is an answer and not a failure. */
 async function gitCode(cwd, args) {
   try {
-    const { stdout } = await pexecFile('git', args, { cwd, maxBuffer: 32 * 1024 * 1024, windowsHide: true });
+    const { stdout } = await run(cwd, args);
     return { code: 0, out: stdout.trimEnd() };
   } catch (e) {
     return { code: typeof e.code === 'number' ? e.code : -1, out: (e.stdout || '').toString().trimEnd() };
