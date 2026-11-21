@@ -7,7 +7,7 @@ import { F } from './floor.js';
 const STEPS = [
   { id: 'seat', name: 'PICK', tip: 'Pick a ticket: tap a reviewer in the line, then seat them.' },
   { id: 'split', name: 'DELEGATE', tip: 'Break the ticket into tasks, one station each, and send them to your agents.' },
-  { id: 'review', name: 'REVIEW', tip: 'An agent finished. Read every hunk of its diff at the Pass, then Serve it or send it back.' },
+  { id: 'review', name: 'REVIEW', tip: "An agent finished. Read its summary at the Pass (the code is there if you want it), then Serve it or send it back." },
   { id: 'serve', name: 'HAND OFF', tip: 'Review the rest of this ticket at the Pass: it goes to the reviewer once every change is served.' },
   { id: 'ship', name: 'SHIP', tip: "Read the reviewer's feedback, then ship it with the bill." },
 ];

@@ -13,7 +13,7 @@ import { CODES, LIMITS, STATION_LABEL, STATION_FILES } from '/shared/protocol.js
 const P = { el: null, inner: null, key: null, states: new Map(), sig: null, opened: 0, lastOpenMs: 0 };
 export const panelKey = () => P.key;
 export const panelOpen = () => !!P.key;
-/** State a panel keeps across redraws (drafts, the hunk you are on, a half-written reason). One per key. */
+/** State a panel keeps across redraws (drafts, the hunk you are on, an open fold, a half-written reason). One per key. */
 export function panelState(key = P.key) { if (!P.states.has(key)) P.states.set(key, { __key: key }); return P.states.get(key); }
 
 export function initPanels(ui) {
@@ -247,7 +247,7 @@ const PANELS = {
     sig: S => `${S.shift.status}`,
     render(el, S) {
       el.innerHTML = `<div class="fl-head"><small>How to play</small><h2>Run the pass</h2></div>
-        <div class="fl-body"><ol class="fl-loop"><li><b>Pick</b> a ticket: each Customer is a reviewer agent with a ticket, like a GitHub issue.</li><li><b>Delegate</b> it as tasks, one Station each (Frontend, Backend, Database, Integration). Chefs are your coding agents.</li><li><b>Review</b> each finished diff at the Pass, hunk by hunk. Serve it, or send it back with what to fix.</li><li><b>Hand off</b>: once every change is served, the reviewer checks it against the ticket.</li><li><b>Ship</b> it with the Bill when the reviewer is happy.</li></ol>
+        <div class="fl-body"><ol class="fl-loop"><li><b>Pick</b> a ticket: each Customer is a reviewer agent with a ticket, like a GitHub issue.</li><li><b>Delegate</b> it as tasks, one Station each (Frontend, Backend, Database, Integration). Chefs are your coding agents.</li><li><b>Review</b> each finished change at the Pass: the Chef's summary says what changed, and the code is a tap away if you want to read it. Serve it, or send it back with what to fix.</li><li><b>Hand off</b>: once every change is served, the reviewer checks it against the ticket.</li><li><b>Ship</b> it with the Bill when the reviewer is happy.</li></ol>
         <p>When both agents are working you may <b>take a break</b>. You are called back after your grace period.</p>
         <dl class="fl-keys"><dt>WASD / click</dt><dd>walk</dd><dt>E</dt><dd>use what is near</dd><dt>Shift</dt><dd>dash</dd><dt>Tab</dt><dd>the most urgent thing</dd><dt>T</dt><dd>Type it</dd><dt>J / K</dt><dd>next / previous hunk</dd><dt>P</dt><dd>presenter mode</dd><dt>Esc</dt><dd>close</dd></dl></div>
         <div class="fl-foot"><div class="fl-row">${S.shift.status === 'running' ? actBtn('Close up for the day', 'closeShift', {}, 'bad') : ''}<button type="button" class="fl-btn ghost" data-sound>${isMuted() ? 'Sound on' : 'Sound off'}</button><button type="button" class="fl-btn ghost" data-presenter>Presenter mode <kbd>P</kbd></button></div></div>`;

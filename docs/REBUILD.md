@@ -171,7 +171,7 @@ One Node process, `http` + `ws`, all state in memory. `SHOWCASE=1` adds the sand
 
 Rules the builders must not reinterpret:
 
-- `approveMeal` needs `hunksSeen === hunks.length`. `serveOrder` takes only `approved` Meals. That is the review discipline.
+- `serveOrder` takes only `approved` Meals. Reading the diff is optional: `approveMeal` and `serveMeal` accept a Meal with hunks unread, because the Chef's summary is what the player decides on. `hunksSeen` only records what was read.
 - `giveBill` needs at least one Feedback on that Order. Points use the latest Feedback score.
 - Redo keeps the previous answer: the redo prompt carries the earlier `code` and the reason. `redoCount` rises; the Item goes to the front of the queue.
 - Patience on a Meal runs from `ready` (or from the call-back, when on break) until `sampleMeal`. Patience on a Customer runs from Feedback ready until `readFeedback`. −1 per 5 % lost, at most −20 a meter, −50 at empty; the Customer stays (D6).
@@ -298,7 +298,7 @@ Owns: `server/*.mjs` and `server/agents/` (not `server/showcase/`), `content/`, 
 | --- | --- | --- | --- | --- |
 | B1.1 | Contract files and skeleton | `shared/protocol.js`, `shared/types.js`, `shared/hunks.js`, `shared/fixtures.js`, `server/index.mjs`, `server/config.mjs`, `test/helpers/server.mjs` | `splitHunks(text)`, `fixtureFloor(stage)`, `fixtureBuilding(n)`, `startServer(env) -> { url, stop }` | `node test/server.mjs`: server starts, `/health` 200, `hello` → `welcome` |
 | B1.2 | Floors, roles, slots, queue, tokens, lifetime | `server/floors.mjs`, `server/roles.mjs` | `FloorManager.create/get/destroy/sweep`, `snapshot(floor, conn)`, `chooseRole`, `claimSlot(role)`, `joinQueue`, `resume(token)` | Unit, with an injected clock: 61st player gets `no_slot`; judge slots held; destroy at 15 min; a reconnect with the token regains the floor; the snapshot JSON never contains a key or token |
-| B1.3 | Actions and state machines | `server/actions.mjs` | `seat`, `saveItems`, `sendItems`, `sampleMeal`, `seeHunk`, `redoMeal`, `approveMeal`, `serveOrder`, `readFeedback`, `moreWork`, `giveBill`, `startBreak`, `endBreak`, `updateSettings`, `setMode`, `closeShift`, `playAgain`, `leave` | Every illegal transition answers the right code; a visitor's action answers `view_only`; approve before all hunks seen answers `unread` |
+| B1.3 | Actions and state machines | `server/actions.mjs` | `seat`, `saveItems`, `sendItems`, `sampleMeal`, `seeHunk`, `redoMeal`, `approveMeal`, `serveOrder`, `readFeedback`, `moreWork`, `giveBill`, `startBreak`, `endBreak`, `updateSettings`, `setMode`, `closeShift`, `playAgain`, `leave` | Every illegal transition answers the right code; a visitor's action answers `view_only`; a Meal serves with hunks unread |
 | B1.4 | Loop, ScriptedKitchen, content | `server/loop.mjs`, `server/scripted.mjs`, `content/orders.mjs` | `tick(floor, now)`, `dispatch`, `releaseMeal`, `scriptedMeal`, `scriptedFeedback` | All 5 Orders ship end to end in Demo over WebSocket; FIFO holds; 2 Chefs at most; Order 3's first review is not satisfied; a typed Item gets `setMenu` |
 | B1.5 | Pomodoro and scoring | `server/loop.mjs`, `server/scoring.mjs` | `breakEligible`, `fireCallBack`, `drainPatience`, `forceBreak`, `award(floor, event)`, `report(floor)` | Clock-driven: no call-back inside grace; call-back after grace + delay; patience starts at call-back; −20 cap then −50; forced break locks actions; report numbers match a scripted run |
 | B1.6 | Live agents, stove, budget | `server/agents/*.mjs`, `server/callqueue.mjs`, `server/budget.mjs` | `cookLive(ctx)`, `reviewLive(ctx)`, `CallQueue.run`, `reserve`, `settle`, `usage()` | `node test/agents.mjs` against the mock: request has one forced tool and the right model per role; cost is settled from `usage`; limit 2 in flight makes the third Chef `waiting_stove`; one failure → `burnt` → retry; two → scripted; cap reached → `budgetSpent`, `setMode demo` continues |
@@ -316,7 +316,7 @@ Owns: `public/game/scene.js`, `characters.js`, `floor.js`, `floorinput.js`, `flo
 | B2.2 | Agent state | `floor.js` | `chefBadge`, `statusRing`, `patienceRing`, `ticketBadge` | Each fixture stage shows the right badge text, ring and face; "waiting for a stove" appears |
 | B2.3 | Waiter and input | `floorinput.js` | `tap(target)` opens the panel then `runTo(target, 0.4)`, `urgent()`, key map | Panel visible within 100 ms of the tap (measured); Waiter arrives in about 0.4 s; WASD, E, Tab, ? work |
 | B2.4 | Order pad and quick picks | `panels.js`, `quickpicks.js` | `openPreview(customer)`, `openTable(customer)`, `chipRow(picks, onPick)`, `typeIt()`, `stationPicker()` | Seat, add 2 chips, edit one inline, Type it and back, send: the right `saveItems` and `sendItems` go out; the stand-in note is present; 1–5 Items enforced |
-| B2.5 | Pass and review | `review.js` | `openMeal(meal)`, `nextHunk`, `prevHunk`, `sendBack(reason)`, `approve()` | J/K step; counter reads "2 of 3 seen"; Approve is disabled until all are seen; redo chips send `redoMeal` |
+| B2.5 | Pass and review | `review.js` | `openMeal(meal)`, `nextHunk`, `prevHunk`, `sendBack(reason)`, `approve()` | The summary leads and the code is folded under "Review the code"; J/K unfold and step it; counter reads "2 of 3 seen"; Serve is open at once; Serve and Send back close the panel; redo chips send `redoMeal` |
 | B2.6 | Serve, Feedback, Bill | `panels.js` | `openServe`, `openFeedback`, `openReceipt`, `shippedBanner()` | Serve note chips; comment card with stars; follow-ups appear as chips after More work; receipt shows SHIPPED, Items, redos, time, score, points; confetti fires |
 | B2.7 | HUD and guide | `hud.js`, `guide.js` | `renderHud(snapshot)`, `guideApply(snapshot)`, `presenter()` | Clock, score, floor name, `#pillSlot` present; the five steps light in order; Skip hides the bar |
 | B2.8 | Break, call-back, report | `breakscreen.js`, `notify.js`, `panels.js` | `showBreak`, `callBack(kind)` (Notification, bell, title flash, vibrate), `openReport(report)` | Take a break appears only when eligible; break screen dims; with `Notification` and `navigator.vibrate` stubbed, a call-back calls both and flashes the title; forced break blocks panels |
@@ -386,7 +386,7 @@ Actions and their `args`:
 | `sampleMeal` | `{ mealId }` | `bad_state` |
 | `seeHunk` | `{ mealId, index }` | |
 | `redoMeal` | `{ mealId, reason }` | `bad_state`, `empty` |
-| `approveMeal` | `{ mealId }` | `unread` |
+| `approveMeal` | `{ mealId }` | |
 | `serveOrder` | `{ customerId, mealIds?, note? }` (default: every approved Meal of that Order) | `nothing_approved` |
 | `readFeedback` | `{ customerId }` | |
 | `moreWork` | `{ customerId }` (turns `suggestedFollowUps` into drafts) | `bad_state` |

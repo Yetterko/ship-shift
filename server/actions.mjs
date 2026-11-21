@@ -108,20 +108,19 @@ const HANDLERS = {
   },
 
   approveMeal(ctx, floor, { mealId }) {
-    const { meal, item } = onPass(floor, mealId);
+    const { item } = onPass(floor, mealId);
     if (item.status === 'approved') return;
-    if (meal.hunksSeen < meal.hunks.length) refuse('unread');
     item.status = 'approved';
     floor.guide.review = true;
   },
 
   /**
    * The one-step review: approve a Meal at the Pass and send it to its reviewer. When the rest of the Order is still
-   * being cooked it waits, approved, and goes out with the last one; any notes travel together.
+   * being cooked it waits, approved, and goes out with the last one; any notes travel together. Reading the diff is
+   * optional: the Chef's summary is enough to serve on, and hunksSeen only tells what was read.
    */
   serveMeal(ctx, floor, { mealId, note }, now) {
-    const { meal, item } = onPass(floor, mealId);
-    if (meal.hunksSeen < meal.hunks.length) refuse('unread');
+    const { item } = onPass(floor, mealId);
     item.status = 'approved';
     floor.guide.review = true;
     const c = seatedCustomer(floor, item.customerId);

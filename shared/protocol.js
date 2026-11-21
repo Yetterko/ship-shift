@@ -36,7 +36,6 @@ export const CODES = {
   bad_station: 'Pick a Station for every Item.',
   empty: 'Write something first.',
   no_items: 'Add an Item before sending to the kitchen.',
-  unread: 'Read every hunk before you approve.',
   nothing_approved: 'Approve a Meal at the Pass first.',
   no_feedback: 'Serve the Customer and hear their Feedback first.',
   not_eligible: 'Breaks open when every Chef is busy.',

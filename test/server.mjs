@@ -269,11 +269,12 @@ test('actions: illegal transitions answer the right code; visitors get view_only
   run(20_000);
   const meal = Object.values(p.floor().meals)[0];
   assert.ok(meal.hunks.length >= 2, 'the scripted Meal has more than one hunk');
-  assert.equal(p.act('approveMeal', { mealId: meal.id }).code, 'unread');
   p.act('sampleMeal', { mealId: meal.id });
   assert.equal(p.floor().meals[meal.id].hunksSeen, 1);
-  assert.equal(p.act('approveMeal', { mealId: meal.id }).code, 'unread');
   assert.equal(p.act('seeHunk', { mealId: meal.id, index: 99 }).code, 'bad_state');
+  // reading the code is optional: one hunk of several seen, and the summary is enough to serve on
+  assert.equal(p.act('serveMeal', { mealId: meal.id }).ok, true);
+  assert.equal(p.floor().items[meal.itemId].status, 'served');
 
   const v = client(g);
   v.send('hello', { v: 1 });

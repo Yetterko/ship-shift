@@ -2,7 +2,7 @@
 
 *Claude cooks the code. You run the pass, then take your break.*
 
-A 3D kitchen game that is also a front end for AI coding agents. Customers bring Orders (tickets), you split them into Items for two Chefs, review every Meal hunk by hunk at the Pass, serve, hear the Customer's Feedback and ship it with the Bill. The Pomodoro layer tells you when to take a break and calls you back when something is ready. `docs/SPEC.md` is the requirements; `docs/REBUILD.md` is how this build maps onto them.
+A 3D kitchen game that is also a front end for AI coding agents. Customers bring Orders (tickets), you split them into Items for two Chefs, review every Meal at the Pass on the Chef's summary (the diff is folded underneath for anyone who wants to read it hunk by hunk), serve, hear the Customer's Feedback and ship it with the Bill. The Pomodoro layer tells you when to take a break and calls you back when something is ready. `docs/SPEC.md` is the requirements; `docs/REBUILD.md` is how this build maps onto them.
 
 Every visitor picks a role: **Spectator** (watch the town overview, walk the park, walk into any restaurant read-only), **Player** (your own restaurant, Chefs on Claude Haiku 5.5) or **Judge** (Claude Sonnet 5.5, a bigger budget, reserved slots). Each restaurant is a building around a shared park.
 

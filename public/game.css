@@ -905,6 +905,18 @@ body[data-zone="visit"] #quest, body[data-zone="visit"] #tUrgent { display: none
 .fl-seen.all { background: var(--basil); color: #fff; }
 .fl-hints { color: var(--ink-2); font-size: 12px; margin-left: auto; }
 .fl-decide .fl-btn { flex: 1; }
+/* the code and the note fold away: the Chef's summary is what you decide on */
+.fl-code { background: #fff; border: 2px solid var(--line); border-radius: 11px; }
+.fl-code > summary, .fl-servenote > summary { list-style: none; cursor: pointer; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-height: 44px; padding: 4px 11px; }
+.fl-code > summary::-webkit-details-marker, .fl-servenote > summary::-webkit-details-marker { display: none; }
+.fl-code > summary::after, .fl-servenote > summary::after { content: '▸'; margin-left: auto; font-size: 15px; color: var(--ink-2); transition: transform .15s; }
+.fl-code[open] > summary::after, .fl-servenote[open] > summary::after { transform: rotate(90deg); }
+.fl-code > summary small, .fl-servenote > summary small { color: var(--ink-2); font-size: 12.5px; }
+.fl-code > summary .add { color: #2f8a44; font-weight: 700; } .fl-code > summary .del { color: var(--tomato); font-weight: 700; }
+.fl-code[open] > summary { border-bottom: 2px dashed #d8c39a; }
+.fl-codebody { display: flex; flex-direction: column; gap: 8px; padding: 9px; }
+.fl-servenote > summary { padding: 0 2px; }
+.fl-notebody { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
 .fl-redo { display: flex; flex-direction: column; gap: 7px; }
 .fl-others { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .fl-others small { color: var(--ink-2); }

@@ -120,28 +120,34 @@ export async function playPriya(page, ok, { shots = null } = {}) {
   ok(edited, 'the inline edit reached the server');
   await page.waitForTimeout(700);
   await shot('03-cooking');
-  // review each Meal: every hunk, then Serve it to the reviewer (the last one carries a note chip)
+  // review each Meal and Serve it to the reviewer: the first one after reading every hunk, the second on the Chef's
+  // summary alone with a note chip. Serving closes the panel.
   for (let n = 0; n < 2; n++) {
     await waitSnap(page, S => S.pass.some(id => ['ready', 'sampled'].includes(S.items[S.meals[id].itemId].status)), null, 60000, 'a Meal on the Pass');
     await tapThing(page, 'pass');
     await page.waitForFunction(() => window.__floor.panel()?.startsWith('meal:'), null, { timeout: 5000 });
     const approve = page.locator('#flPanel .fl-decide button', { hasText: /serve/i }).first();
     await approve.waitFor();
-    const total = await page.locator('#flPanel .fl-hunk').count();
-    if (total > 1) ok(await approve.isDisabled(), `Serve waits until all ${total} hunks are seen`);
-    for (let i = 0; i < total + 1; i++) {
-      if (await page.locator('#flPanel .fl-seen.all').count()) break;
-      const next = page.locator('#flPanel [data-step="1"]');
-      await tapEl(next); await page.waitForTimeout(120);
-    }
-    ok(await page.locator('#flPanel .fl-seen').innerText() === `${total} of ${total} seen`, `the counter reads ${total} of ${total} seen`);
-    if (n === 0) await shot('04-review');
-    if (n === 1) {
+    ok(!(await approve.isDisabled()) && !(await page.locator('#flPanel .fl-hunk').first().isVisible()), 'Serve is open at once and the code is folded away');
+    if (n === 0) {
+      await tapEl(page.locator('#flPanel .fl-code > summary'));
+      await page.locator('#flPanel .fl-hunk.cur').waitFor();
+      const total = await page.locator('#flPanel .fl-hunk').count();
+      for (let i = 0; i < total + 1; i++) {
+        if (await page.locator('#flPanel .fl-seen.all').count()) break;
+        await tapEl(page.locator('#flPanel [data-step="1"]')); await page.waitForTimeout(120);
+      }
+      ok(await page.locator('#flPanel .fl-seen').innerText() === `${total} of ${total} seen`, `"Review the code" unfolds the diff, and the counter reads ${total} of ${total} seen`);
+      await shot('04-review');
+    } else {
+      await tapEl(page.locator('#flPanel .fl-servenote > summary'));
       await page.locator('#flPanel [data-note]').first().waitFor();
       await tapEl(page.locator('#flPanel [data-note]').first());
       ok((await page.locator('#flPanel [data-note-box]').inputValue()).length > 3, 'a note chip fills the note for the reviewer');
     }
     await tapEl(approve);
+    await page.waitForFunction(() => !window.__floor.panel(), null, { timeout: 5000 });
+    ok(true, 'serving closes the review panel');
     await page.waitForTimeout(300);
   }
   const table = await page.evaluate(id => window.__floor.F.snap.tables.findIndex(t => t?.id === id), c1);

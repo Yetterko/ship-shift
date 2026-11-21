@@ -51,23 +51,33 @@ try {
   ok(await page.locator('#pillSlot .harness-pill').count() === 1, 'the pill sits in #pillSlot');
   ok(await page.locator('#flGuide li.done').count() === 4 && (await page.locator('#flGuide li.cur').innerText()).includes('SHIP'), 'the walkthrough has lit SEAT to SERVE and points at SHIP');
 
-  // B2.5 review: J/K, the counter, Approve shut until all seen, redo chips
+  // B2.5 review: the summary leads, the code is folded away (J/K unfolds and steps it), Serve is open at once and
+  // closes the panel, redo chips
   await page.evaluate(() => window.__harness.setStage('ready')); await page.waitForTimeout(200);
   await page.evaluate(() => window.__floor.tap('pass')); await page.waitForTimeout(300);
   ok(await page.evaluate(() => window.__floor.panel()) === 'meal:m1', 'tapping the Pass opens the Meal');
   const acts = () => page.evaluate(() => window.__harness.acts.map(a => a.name));
   ok((await acts()).includes('sampleMeal'), 'opening a fresh Meal samples it');
   const hunks = await page.locator('#flPanel .fl-hunk').count();
-  ok(await page.locator('#flPanel button', { hasText: /serve/i }).isDisabled(), 'Serve is shut before every hunk is seen');
+  const codeOpen = () => page.locator('#flPanel .fl-code').evaluate(d => d.open);
+  ok(await page.locator('#flPanel .fl-summary').isVisible() && !(await codeOpen()) && !(await page.locator('#flPanel .fl-hunk').first().isVisible()), 'the Chef\'s summary shows and the code starts folded away');
+  ok(!(await page.locator('#flPanel button', { hasText: /serve/i }).isDisabled()), 'Serve is open without reading the code');
+  await page.keyboard.press('j'); await page.waitForTimeout(80);
+  ok(await codeOpen() && await page.locator('#flPanel .fl-hunk.cur').isVisible(), 'J unfolds the code on the first hunk');
   await page.keyboard.press('j'); await page.waitForTimeout(80);
   ok(await page.locator('#flPanel .fl-seen').innerText() === `2 of ${hunks} seen`, `J steps on: "2 of ${hunks} seen"`);
-  await page.keyboard.press('k'); await page.keyboard.press('j'); await page.keyboard.press('j'); await page.waitForTimeout(100);
-  ok(!(await page.locator('#flPanel button', { hasText: /serve/i }).isDisabled()), 'Serve opens once all are seen');
+  await page.locator('#flPanel .fl-code > summary').click(); await page.waitForTimeout(80);
+  ok(!(await codeOpen()), 'tapping "Review the code" folds it again');
+  await page.locator('#flPanel .fl-decide button', { hasText: /serve/i }).click(); await page.waitForTimeout(100);
+  const served = await page.evaluate(() => window.__harness.acts.find(a => a.name === 'serveMeal'));
+  ok(served?.args.mealId === 'm1' && await page.evaluate(() => window.__floor.panel()) === null, 'Serve sends serveMeal and closes the panel');
+  await page.evaluate(() => window.__floor.tap('pass')); await page.waitForTimeout(300);
   await page.locator('#flPanel button', { hasText: 'Send back' }).click();
   await page.locator('#flPanel [data-why]').first().click();
   await page.locator('#flPanel button', { hasText: 'Send back for a Redo' }).click(); await page.waitForTimeout(100);
   const redo = await page.evaluate(() => window.__harness.acts.find(a => a.name === 'redoMeal'));
   ok(redo && redo.args.mealId === 'm1' && redo.args.reason.length > 3, `a redo chip sends redoMeal with "${redo?.args.reason}"`);
+  ok(await page.evaluate(() => window.__floor.panel()) === null, 'sending it back closes the panel too');
 
   // B2.8 break screen, call-back with Notification and vibrate stubbed, forced break blocks panels
   await page.evaluate(() => {
