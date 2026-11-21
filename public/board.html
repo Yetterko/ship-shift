@@ -3,99 +3,62 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ship Shift</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bungee&family=JetBrains+Mono:wght@400;600&family=Rubik:wght@400;500;700&display=swap">
-<link rel="stylesheet" href="/style.css">
+<title>Ship Shift: pro view</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/game.css">
+<style>
+  body { background: var(--night); color: var(--paper); font: 15px/1.4 var(--body); margin: 0; padding: 18px; overflow: auto; }
+  h1 { font: 400 26px/1 var(--display); color: var(--gold); margin: 0 0 4px; }
+  .sub { color: #e8d6c0; margin: 0 0 14px; font-size: 13px; }
+  .sub a { color: var(--gold); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  section { background: var(--paper); color: var(--ink); border: 3px solid var(--line); border-radius: 14px; padding: 12px; box-shadow: 0 5px 0 #000; }
+  section h2 { font: 400 15px/1 var(--display); margin: 0 0 8px; }
+  ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+  li { background: var(--paper-2); border-radius: 8px; padding: 6px 8px; font-size: 13px; display: flex; gap: 8px; align-items: baseline; }
+  li b { font-family: var(--mono); font-size: 12px; }
+  li em { margin-left: auto; font-style: normal; font-weight: 700; color: var(--ink-2); font-size: 12px; white-space: nowrap; }
+  .st { font: 400 10px/1 var(--display); color: #fff; padding: 3px 5px; border-radius: 5px; }
+  .lb { font-size: 22px; } .lb li { font-size: 20px; padding: 10px 14px; } .lb li.team { background: #d8ecfa; } .lb em { font: 400 22px var(--display); color: var(--ink); }
+  .empty { color: var(--ink-2); font-size: 13px; }
+</style>
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">SHIP <span>SHIFT</span></div>
-  <div class="shift" id="shift">
-    <div class="clock"><small id="shiftMode">Kitchen idle</small><b id="shiftClock">25:00</b></div>
-    <div class="shift-controls">
-      <label>Focus <input id="focusMin" type="number" min="1" max="90" value="25"></label>
-      <label>Break <input id="breakMin" type="number" min="1" max="30" value="5"></label>
-      <button class="btn" id="shiftBtn" type="button">Start shift</button>
-    </div>
-  </div>
-  <div class="meters">
-    <div class="meter"><small>Score</small><b id="mScore">0</b></div>
-    <div class="meter" id="mBlockedBox"><small>Agents waiting on you</small><b id="mBlocked">0s</b></div>
-    <div class="meter"><small>Shipped</small><b id="mShipped">0</b></div>
-    <div class="meter"><small>Spend</small><b id="mSpend">$0.00</b></div>
-    <button class="iconbtn" id="soundBtn" type="button" aria-pressed="true">Sound on</button>
-  </div>
-</header>
+<h1 id="title">Ship Shift</h1>
+<p class="sub" id="sub">The same restaurant without the art. <a href="/">Back to the floor</a></p>
+<div id="root"></div>
+<script type="module">
+// The pro view: the restaurant as plain lists, and the leaderboard for the projector (?leaderboard).
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const COLORS = { backend: '#4aa3d8', frontend: '#f2a03a', database: '#57b86a', integration: '#c873d6' };
+const stamp = id => `<span class="st" style="background:${COLORS[id] || '#888'}">${esc(id)}</span>`;
+const mmss = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+const boardOnly = new URLSearchParams(location.search).has('leaderboard');
+const list = (rows, empty) => rows.length ? `<ul>${rows.join('')}</ul>` : `<p class="empty">${empty}</p>`;
 
-<div class="banner" id="banner" hidden></div>
-
-<main class="kitchen">
-  <section class="rail" aria-label="Orders">
-    <div class="section-head">
-      <h2>Order rail</h2>
-      <span class="hint">Drag a ticket onto a chef, or click a ticket and then a chef.</span>
-      <button class="btn small" id="newOrderBtn" type="button">New order</button>
-    </div>
-    <div class="tickets" id="tickets"></div>
-  </section>
-
-  <section class="line" aria-label="Chefs">
-    <div class="section-head"><h2>The line</h2><span class="hint" id="driverHint"></span></div>
-    <div class="stations" id="stations"></div>
-  </section>
-
-  <section class="pass" aria-label="The pass">
-    <div class="section-head"><h2>The pass</h2><span class="hint">Review before it ships.</span></div>
-    <div class="plates" id="plates"></div>
-    <h3 class="sub">Served</h3>
-    <div class="served" id="served"></div>
-  </section>
-</main>
-
-<dialog id="orderDialog">
-  <form method="dialog" id="orderForm" class="dlg">
-    <h2>New order</h2>
-    <label>What needs doing <input id="oTitle" required maxlength="120" placeholder="Overtime pay for long shifts"></label>
-    <label>Details for the chef <textarea id="oBody" rows="5" placeholder="Acceptance criteria, files, edge cases"></textarea></label>
-    <fieldset class="sizes"><legend>Size</legend>
-      <label><input type="radio" name="oSize" value="S"> Small</label>
-      <label><input type="radio" name="oSize" value="M" checked> Medium</label>
-      <label><input type="radio" name="oSize" value="L"> Large</label>
-    </fieldset>
-    <div class="row"><button class="btn" value="ok" type="submit">Put it on the rail</button><button class="btn ghost" value="cancel" type="button" id="orderCancel">Cancel</button></div>
-  </form>
-</dialog>
-
-<dialog id="reviewDialog" class="review">
-  <div class="dlg">
-    <div class="review-head">
-      <div><small id="rEyebrow"></small><h2 id="rTitle"></h2></div>
-      <button class="iconbtn" id="rClose" type="button">Close</button>
-    </div>
-    <div class="review-meta" id="rMeta"></div>
-    <details id="rSummaryBox" open><summary>Chef's summary</summary><pre id="rSummary" class="prose"></pre></details>
-    <details id="rTestsBox"><summary id="rTestsLabel">Tests</summary><pre id="rTests" class="out"></pre></details>
-    <div class="diff" id="rDiff"></div>
-    <label class="fb">Feedback for the chef (needed to send it back)<textarea id="rComment" rows="3" placeholder="The overtime threshold should be per shift, not per day"></textarea></label>
-    <div class="row">
-      <button class="btn ship" id="rShip" type="button">Ship it: merge to main</button>
-      <button class="btn danger" id="rBack" type="button">Send it back</button>
-    </div>
-  </div>
-</dialog>
-
-<dialog id="reportDialog">
-  <div class="dlg">
-    <small id="repEyebrow">Focus block over</small>
-    <h2 id="repTitle">Shift report</h2>
-    <div class="report" id="repBody"></div>
-    <div class="row"><button class="btn" id="repClose" type="button">Run the pass</button></div>
-  </div>
-</dialog>
-
-<div class="toasts" id="toasts" aria-live="polite"></div>
-<script src="/app.js" type="module"></script>
+async function tick() {
+  try {
+    const lb = await (await fetch('/api/leaderboard')).json();
+    const board = `<section class="lb"><h2>Leaderboard</h2>${list(lb.map((r, i) => `<li class="${r.team ? 'team' : ''}"><span>${i + 1}. ${esc(r.name)}${r.team ? ' (team)' : ''}</span><em>${r.score}</em></li>`), 'No restaurants open yet.')}</section>`;
+    if (boardOnly) { $('title').textContent = 'Ship Shift leaderboard'; $('sub').innerHTML = 'Scan the QR code to open your own restaurant.'; $('root').innerHTML = board; return; }
+    const S = await (await fetch('/api/state')).json();
+    const cust = id => S.customers.find(c => c.id === id);
+    $('title').textContent = `${S.name} · ${S.shift.phase}`;
+    const line = S.customers.filter(c => c.state === 'in_line').sort((a, b) => a.lineOrder - b.lineOrder);
+    const seated = S.customers.filter(c => c.tableId && !['paid', 'in_line'].includes(c.state));
+    const items = id => S.items.filter(i => i.customerId === id && i.state !== 'binned');
+    $('root').innerHTML = `<div class="grid">
+      <section><h2>Line</h2>${list(line.map(c => `<li><b>${esc(c.key)}</b>${esc(c.title)}<em>${Math.round(c.patience * 100)}%</em></li>`), 'Nobody waiting.')}</section>
+      <section><h2>Tables</h2>${list(seated.map(c => `<li><b>T${c.tableId} ${esc(c.key)}</b>${esc(c.persona.name)}: ${esc(c.state.replace('_', ' '))} · ${items(c.id).length} items<em>${Math.round(c.patience * 100)}%</em></li>`), 'No one seated.')}</section>
+      <section><h2>Rail</h2>${list(S.rail.map(id => S.items.find(i => i.id === id)).map(i => `<li>${stamp(i.station)}<b>${esc(cust(i.customerId)?.key)}</b>${esc(i.prompt.slice(0, 70))}</li>`), 'No tickets waiting.')}</section>
+      <section><h2>Chefs</h2>${list(S.chefs.map(c => { const it = S.items.find(i => i.id === c.itemId); return `<li><b>${esc(c.name)}</b>${c.state}${c.stationId ? ` at ${esc(c.stationId)}` : ''}${it ? `: ${esc(it.prompt.slice(0, 50))}` : ''}<em>${esc(c.driver)}</em></li>`; }), '')}</section>
+      <section><h2>Counter</h2>${list(S.counter.map(id => S.items.find(i => i.id === id)).map(i => `<li>${stamp(i.station)}<b>${esc(cust(i.customerId)?.key)}</b>${i.tests?.ok === false ? 'tests fail' : 'tests pass'}<em>${mmss(Date.now() - (i.platedAt || Date.now()) + (S.now - Date.now()))}</em></li>`), 'Nothing ready.')}</section>
+      <section><h2>Shift</h2><ul><li>Score<em>${S.stats.score}</em></li><li>Bills paid<em>${S.stats.bills}</em></li><li>Waiting on you<em>${S.waiting.count} · ${mmss(S.waiting.ms)}</em></li><li>Breaks<em>${S.stats.breaks}</em></li><li>Claude spend<em>$${S.stats.costUsd.toFixed(3)}</em></li></ul></section>
+      ${board}</div>`;
+  } catch { /* the server is restarting */ }
+}
+tick(); setInterval(tick, 2000);
+</script>
 </body>
 </html>

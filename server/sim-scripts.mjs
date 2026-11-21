@@ -1,401 +1,288 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { git } from './git.mjs';
+import { SOLUTIONS_DIR } from './projects/roster-cafe.mjs';
 
 /**
- * Recipes for the simulated chefs, keyed by the demo repo's starter-order titles.
+ * Recipes for the simulated chefs, keyed by the roster-cafe preset id (see server/projects/roster-cafe.mjs).
  *
- * A recipe makes the change a careful agent would make to server/demo-repo.mjs's project, one tool event at a time.
- * Each one reads the worktree to decide what is left to do, so a resumed, steered or re-fired run picks up
- * from the files and not from memory. Any other title, or a repo that is not the demo, gets the generic recipe.
+ * A recipe makes the change a careful agent would make, one tool event at a time, and really writes the files.
+ * Each one reads the worktree to decide what is left to do, so a redo or a conflict run picks up from the files.
+ * Every recipe edits different lines from every other customer's recipes, so tables merge into main cleanly in any order.
  *
- * run(ctx) returns the summary for the reviewer. ctx is built by simDriver in agents.mjs:
- *   kind        'first' | 'steer' | 'conflict' | 'feedback'
- *   note        what the head chef said (send-back comment or call-out), or ''
- *   mainBranch  the branch a conflict run merges in
- *   step(tool, text, { file, ms })   one tool event, then the time it takes
- *   edit(file, text, why, ms)        one edit event that really writes the file
- *   read(file)  -> text with LF line endings, or null
- *   say(text), wantsAsk(), ask(question) -> label or null, permit(command) -> boolean
+ * run(ctx) returns the chef's summary. ctx is built by simDriver in agents.mjs:
+ *   kind        'first' | 'conflict' | 'feedback' | 'steer'
+ *   note        the waiter's redo comment, or ''
+ *   mainBranch  the branch a conflict run merges in (the table branch)
+ *   est         how long the special should take, in ms (already divided by the sim speed)
+ *   step(tool, text, { file, ms }), edit(file, text, why, ms), read(file), say(text)
  */
 
-const PAY = 'src/pay.js', ROSTER = 'src/roster.js', EXPORT = 'src/export.js';
 const ID = ['-c', 'user.name=Ship Shift chef', '-c', 'user.email=chef@ship-shift.local'];
+const PAY = 'src/pay.js', ROSTER = 'src/roster.js', PAGE = 'public/index.html', SHEET = 'src/timesheet.js', HOLS = 'src/holidays.js';
+const solution = rel => fs.readFile(path.join(SOLUTIONS_DIR, ...rel.split('/')), 'utf8').then(t => t.replace(/\r\n/g, '\n'));
 
-/* ---------- src/pay.js: the block Overtime and CSV export both rewrite ---------- */
-
-const BASE_DOC = "/** Pay for one shift at the staff member's base rate. Overtime is not handled yet. */";
-const OT_SUM = {
-  // Pays the overtime hours at the base rate and then again at 1.5x, so a 10 hour shift at 30 pays 390, not 330.
-  wrong: 'hours * staff.rate + overtime * staff.rate * 1.5',
-  right: '(hours - overtime) * staff.rate + overtime * staff.rate * 1.5',
-};
-
-function detectPay(text) {
-  return {
-    exact: text.includes('function shiftPayExact'),
-    overtime: text.includes(OT_SUM.right) ? 'right' : text.includes(OT_SUM.wrong) ? 'wrong' : 'none',
-  };
-}
-
-function payBlock({ overtime, exact }) {
-  const ot = overtime !== 'none';
-  const body = wrap => (ot
-    ? ['  const hours = shiftHours(shift);', '  const overtime = Math.max(0, hours - 8);', `  return ${wrap(OT_SUM[overtime])};`]
-    : [`  return ${wrap('shiftHours(shift) * staff.rate')};`]);
-  const rule = 'base rate for the first 8 hours, 1.5x after that';
-  if (!exact) {
-    return [ot ? `/** Pay for one shift: ${rule}. */` : BASE_DOC, 'export function shiftPay(shift, staff) {', ...body(x => `round2(${x})`), '}'].join('\n');
-  }
-  return [
-    ot ? `/** Unrounded pay for one shift: ${rule}. */` : '/** Unrounded pay for one shift, so a weekly total can round once at the end. */',
-    'export function shiftPayExact(shift, staff) {', ...body(x => x), '}', '',
-    ot ? '/** Pay for one shift, rounded to cents. */' : BASE_DOC,
-    'export function shiftPay(shift, staff) {', '  return round2(shiftPayExact(shift, staff));', '}', '',
-    '/** Pay for every shift one staff member worked, rounded once. */',
-    'export function weeklyPay(shifts, staff) {', '  return round2(shifts.reduce((sum, s) => sum + shiftPayExact(s, staff), 0));', '}',
-  ].join('\n');
-}
-
-/** Rewrites the pay block, keeping everything else in the file. Returns null when the file is not the demo's pay.js. */
-function setPay(text, change) {
-  if (!text) return null;
-  const fn = text.search(/export function shiftPay(Exact)?\(/);
-  const end = text.indexOf('export function weeklyHours');
-  if (fn < 0 || end < fn) return null;
-  const doc = text.lastIndexOf('/**', fn);
-  const start = doc >= 0 && !text.slice(doc, fn).includes('\n\n') ? doc : fn;
-  return text.slice(0, start) + payBlock({ ...detectPay(text), ...change }) + '\n\n' + text.slice(end);
-}
-
-/* ---------- shared moves ---------- */
-
-/**
- * Really runs `git merge <main>` in the worktree and resolves what conflicts.
- * resolvers maps a file to a function from main's version to the resolved text; any other file keeps both sides.
- */
-export async function mergeMain(ctx, resolvers = {}) {
+/** Merges the given branch into the worktree, then strips any conflict markers by keeping both sides. */
+export async function mergeMain(ctx) {
   const main = ctx.mainBranch;
   await ctx.step('Bash', `runs git merge ${main}`, { ms: 1500 });
   await git(ctx.cwd, [...ID, 'merge', '--no-edit', main], { allowFail: true });
   const conflicted = ((await git(ctx.cwd, ['diff', '--name-only', '--diff-filter=U'], { allowFail: true })) || '').split('\n').filter(Boolean);
   for (const f of conflicted) {
-    let resolved = null;
-    if (resolvers[f]) {
-      const theirs = await git(ctx.cwd, ['show', `${main}:${f}`], { allowFail: true });
-      if (theirs != null) resolved = resolvers[f](theirs.replace(/\r\n/g, '\n') + '\n');
-    }
-    if (resolved == null) {
-      const mine = await ctx.read(f);
-      if (mine != null) resolved = mine.split('\n').filter(l => !/^(<{7}|={7}|>{7})( |$)/.test(l)).join('\n');
-    }
-    if (resolved != null) await ctx.edit(f, resolved, `resolves the conflict in ${f}`, 2200);
+    const mine = await ctx.read(f);
+    if (mine != null) await ctx.edit(f, mine.split('\n').filter(l => !/^(<{7}|={7}|>{7})( |$)/.test(l)).join('\n'), `resolves the conflict in ${f}`, 1800);
     await git(ctx.cwd, ['add', '-A', '--', f], { allowFail: true });
   }
+  if (conflicted.length) await git(ctx.cwd, [...ID, 'commit', '-q', '--no-edit'], { allowFail: true });
   ctx.say(conflicted.length ? `Merged ${main}. Resolved by hand: ${conflicted.join(', ')}.` : `Merged ${main} with no conflicts.`);
   return conflicted;
 }
 
-const heard = ctx => (ctx.kind === 'steer' ? `Heard you: "${ctx.note}".` : ctx.note ? `Read your note: "${ctx.note}".` : '');
+/** Replaces one exact piece of text in a file. Returns false when the file does not hold it. */
+async function swap(ctx, file, from, to, why, ms) {
+  const text = await ctx.read(file);
+  if (text == null || !text.includes(from)) return false;
+  await ctx.edit(file, text.replace(from, to), why || `edits ${file}`, ms);
+  return true;
+}
+const has = async (ctx, file, needle) => ((await ctx.read(file)) || '').includes(needle);
+const tests = (ctx, ms) => ctx.step('Bash', 'runs npm test', { ms });
+const heard = ctx => (ctx.note ? `Read your note: "${ctx.note}".` : '');
 
-/** For a run that finds its recipe already cooked: say so plainly instead of pretending to act on free text. */
-async function nothingLeft(ctx, what) {
-  ctx.say(`${heard(ctx)} ${what} is already on the plate, and a simulated chef only knows its recipe, so the code is unchanged.`.trim());
-  await ctx.step('Bash', 'runs npm test', { ms: 2200 });
-  return `${what} is unchanged. Simulated chefs follow a fixed recipe and cannot act on free-form notes.`;
+/** A recipe that finds its work already done: re-checks, runs the tests, and says so plainly. */
+async function recheck(ctx, what) {
+  if (heard(ctx)) ctx.say(heard(ctx));
+  await tests(ctx, ctx.est * 0.3);
+  return `${what} was already in place, so I re-ran the tests instead of changing it again.`;
 }
 
-/* ---------- the four starter orders ---------- */
-
-const WEEKLY_TEST = `import test from 'node:test';
-import assert from 'node:assert/strict';
-import { weeklyHours } from '../src/pay.js';
-
-test('weeklyHours adds up every shift', () => {
-  assert.equal(weeklyHours([
-    { start: '2026-11-16T09:00:00Z', end: '2026-11-16T17:00:00Z' },
-    { start: '2026-11-17T09:00:00Z', end: '2026-11-17T13:00:00Z' },
-  ]), 12);
-});
-
-test('weeklyHours of an empty roster is 0', () => {
-  assert.equal(weeklyHours([]), 0);
-});
-`;
-
-const weeklyHours = {
-  title: 'Weekly hours crashes',
-  planFile: PAY,
-  plan: `Plan:
-1. Reproduce: call weeklyHours() with one shift and read the error.
-2. The loop in src/pay.js runs to i <= shifts.length, one past the end. Change it to i < shifts.length.
-3. Add test/weekly-hours.test.js: a two-shift roster and an empty roster.
-4. Run npm test.`,
-  async applies(ctx) { return /i <=? shifts\.length/.test((await ctx.read(PAY)) || ''); },
-  async run(ctx) {
-    await ctx.step('Read', `reads ${PAY}`, { file: PAY, ms: 1500 });
-    if (ctx.kind === 'conflict') await mergeMain(ctx);
-    const text = await ctx.read(PAY);
-    const testFile = 'test/weekly-hours.test.js';
-    if (!text.includes('i <= shifts.length') && await ctx.read(testFile)) {
-      if (ctx.kind === 'conflict') { await ctx.step('Bash', 'runs npm test', { ms: 2200 }); return `Merged ${ctx.mainBranch}. The weeklyHours fix still applies and the tests pass.`; }
-      return nothingLeft(ctx, 'The weeklyHours fix');
-    }
-    if (heard(ctx)) ctx.say(heard(ctx));
-    if (text.includes('i <= shifts.length')) {
-      await ctx.step('Bash', 'runs node -e "import(\'./src/pay.js\').then(m => m.weeklyHours([]))"', { ms: 2000 });
-      ctx.say('The loop reads shifts[shifts.length], which is undefined, so shiftHours throws on every roster.');
-      await ctx.edit(PAY, text.replace('i <= shifts.length', 'i < shifts.length'), `edits ${PAY}`, 2500);
-    }
-    if (!await ctx.read(testFile)) await ctx.edit(testFile, WEEKLY_TEST, `writes ${testFile}`, 3000, 'Write');
-    await ctx.step('Bash', 'runs npm test', { ms: 2500 });
-    return `weeklyHours() looped one past the end of the roster (i <= shifts.length), so it threw for every input. Changed the bound to i < shifts.length in ${PAY}. Added ${testFile} with a two-shift roster and an empty roster. npm test passes.`;
+const recipes = {
+  '101-backend': {
+    async run(ctx) {
+      const e = ctx.est;
+      await ctx.step('Read', `reads ${PAY}`, { file: PAY, ms: e * 0.15 });
+      await ctx.step('Grep', 'searches for loadingFor', { ms: e * 0.1 });
+      if (await has(ctx, PAY, 'day === SUNDAY ? 1.5')) return recheck(ctx, 'The Sunday loading');
+      ctx.say('Sundays fall through to the Saturday branch, so they get 1.25x.');
+      await swap(ctx, PAY, '/** The penalty loading for a date. TODO: Sunday should be 1.5x; it gets the Saturday loading for now. */', '/** The penalty loading for a date: Sundays are 1.5x, Saturdays 1.25x, weekdays 1x. */', `edits ${PAY}`, e * 0.1);
+      await swap(ctx, PAY, '  return day === SATURDAY || day === SUNDAY ? 1.25 : 1;', '  return day === SUNDAY ? 1.5 : day === SATURDAY ? 1.25 : 1;', `edits ${PAY}`, e * 0.2);
+      await ctx.edit('test/sunday.test.js', await solution('test/sunday.test.js'), 'writes test/sunday.test.js', e * 0.2, 'Write');
+      await tests(ctx, e * 0.25);
+      return 'Sundays now pay 1.5x in loadingFor; Saturday stays 1.25x and weekdays 1x. Added test/sunday.test.js (a 4 hour Sunday shift at $30 pays $180). All tests pass.';
+    },
   },
-};
 
-const OVERTIME_TESTS = `
-const hoursLong = hours => ({ start: '2026-11-20T09:00:00Z', end: new Date(Date.parse('2026-11-20T09:00:00Z') + hours * 36e5).toISOString() });
-
-test('an 8 hour shift earns no overtime', () => {
-  assert.equal(shiftPay(hoursLong(8), { rate: 30 }), 240);
-});
-
-test('a 10 hour shift pays 2 hours at 1.5x', () => {
-  assert.equal(shiftPay(hoursLong(10), { rate: 30 }), 330);
-});
-
-test('a 12 hour shift pays 4 hours at 1.5x', () => {
-  assert.equal(shiftPay(hoursLong(12), { rate: 30 }), 420);
-});
-`;
-
-const overtime = {
-  title: 'Overtime pay',
-  planFile: PAY,
-  plan: `Plan:
-1. shiftPay in src/pay.js is the only place pay is worked out. Split the hours into the first 8 and the rest.
-2. Pay the first 8 at the base rate and the rest at 1.5x, then round once.
-3. Add tests in test/pay.test.js for 8, 10 and 12 hour shifts (240, 330 and 420 at a rate of 30).
-4. Run npm test after the new cases are in, not before.
-Assumption: overtime is per shift, as the order says, not per week.`,
-  async applies(ctx) { return setPay(await ctx.read(PAY), {}) != null; },
-  async run(ctx) {
-    const testFile = 'test/pay.test.js';
-    await ctx.step('Read', `reads ${PAY}`, { file: PAY, ms: 1500 });
-    if (ctx.kind === 'conflict') {
-      const conflicted = await mergeMain(ctx, { [PAY]: theirs => setPay(theirs, { overtime: 'right' }) });
-      const merged = await ctx.read(PAY);
-      if (detectPay(merged).overtime !== 'right') await ctx.edit(PAY, setPay(merged, { overtime: 'right' }), `edits ${PAY}`, 2000);
-      await ctx.step('Bash', 'runs npm test', { ms: 2500 });
-      return `Merged ${ctx.mainBranch}${conflicted.length ? ` and resolved ${conflicted.join(', ')}` : ''}. The overtime rule now sits on top of what main had: base rate for the first 8 hours, 1.5x after. npm test passes.`;
-    }
-    const addTests = async () => {
-      const tests = await ctx.read(testFile);
-      if (tests != null && !tests.includes('hoursLong')) await ctx.edit(testFile, tests.trimEnd() + '\n' + OVERTIME_TESTS, `edits ${testFile}`, 3000);
-    };
-    const text = await ctx.read(PAY);
-    const state = detectPay(text).overtime;
-    if (state === 'right') { await addTests(); return nothingLeft(ctx, 'The overtime rule'); }
-    if (state === 'none') {
-      await ctx.step('Read', `reads ${testFile}`, { file: testFile, ms: 1500 });
+  '102-backend': {
+    async run(ctx) {
+      const e = ctx.est;
+      const WRONG = '  const end = minutes(shift.end) || 24 * 60; // a close at midnight counts to the end of the day\n  return (end - minutes(shift.start)) / 60;';
+      const RIGHT = '  let mins = minutes(shift.end) - minutes(shift.start);\n  if (mins < 0) mins += 24 * 60; // the shift ends after midnight\n  return mins / 60;';
+      const ORIGINAL = '  return (minutes(shift.end) - minutes(shift.start)) / 60;';
       if (heard(ctx)) ctx.say(heard(ctx));
-      if (ctx.kind === 'first' && ctx.wantsAsk()) {
-        const pick = await ctx.ask({
-          question: 'Should overtime count per shift or per week?', header: 'Overtime',
-          options: [
-            { label: 'Per shift', description: 'Hours past 8 in one shift earn 1.5x, as the order says' },
-            { label: 'Per week', description: 'Hours past 40 in a week earn 1.5x' },
-          ],
-        });
-        ctx.say(/week/i.test(pick || '')
-          ? 'Per week needs the whole roster, which shiftPay never sees. This plate does per shift; weekly overtime wants its own order.'
-          : pick ? 'Per shift it is.' : 'No answer, so going with per shift, as the order is written.');
+      await ctx.step('Read', `reads ${PAY}`, { file: PAY, ms: e * 0.15 });
+      if (await has(ctx, PAY, 'mins += 24 * 60')) return recheck(ctx, 'The overnight shift fix');
+      if (await has(ctx, PAY, WRONG)) {
+        // the redo: the first attempt only handled a close that ends exactly at midnight
+        await ctx.step('Bash', 'runs node --test test/close-shift.test.js', { ms: e * 0.2 });
+        ctx.say('Right: 00:30 is still treated as earlier than the start. Any end before the start means the next day.');
+        await swap(ctx, PAY, WRONG, RIGHT, `edits ${PAY}`, e * 0.25);
+        await tests(ctx, e * 0.25);
+        return 'Fixed shiftHours for every shift that ends after midnight, not just at exactly 00:00: 16:00 to 00:30 is now 8.5 hours. test/close-shift.test.js passes, and so does everything else.';
       }
-      await ctx.edit(PAY, setPay(text, { overtime: 'wrong' }), `edits ${PAY}`, 3500);
-      await ctx.step('Bash', 'runs npm test', { ms: 2500 });
-      ctx.say('The existing tests pass. Adding the 8, 10 and 12 hour cases.');
-      await addTests();
-      return `shiftPay now pays 1.5x for hours past 8 in a shift (${PAY}). Added tests for 8, 10 and 12 hour shifts to ${testFile}. I ran npm test before adding the new cases, not after.`;
-    }
-    // The first attempt is on the plate and it is wrong.
-    if (ctx.kind === 'steer') {
-      ctx.say(heard(ctx));
-      await addTests();
-      await ctx.step('Bash', 'runs npm test', { ms: 2500 });
-      return `Carried on after your call-out. The overtime tests are in ${testFile}; check the oven before you ship.`;
-    }
-    await addTests();
-    await ctx.step('Bash', 'runs npm test', { ms: 2500 });
-    ctx.say('The 10 hour shift pays 390, not 330. The overtime hours are paid at the base rate and then again at 1.5x.');
-    await ctx.edit(PAY, setPay(text, { overtime: 'right' }), `edits ${PAY}`, 3000);
-    await ctx.step('Bash', 'runs npm test', { ms: 2500 });
-    return `Fixed the overtime sum in ${PAY}: the first attempt paid overtime hours twice (base rate plus 1.5x). It now pays the first 8 hours at the base rate and only the rest at 1.5x. The 8, 10 and 12 hour tests pass.`;
+      // the first attempt: misses closes that run past midnight, so the oven lamp goes red
+      ctx.say('A close that ends at 00:00 reads as minute 0, so the hours go negative.');
+      await swap(ctx, PAY, ORIGINAL, WRONG, `edits ${PAY}`, e * 0.25);
+      await ctx.edit('test/close-shift.test.js', await solution('test/close-shift.test.js'), 'writes test/close-shift.test.js', e * 0.2, 'Write');
+      await tests(ctx, e * 0.3);
+      return 'shiftHours now treats a 00:00 end as midnight at the end of the day. Added test/close-shift.test.js.';
+    },
+  },
+
+  '102-frontend': {
+    async run(ctx) {
+      const e = ctx.est;
+      await ctx.step('Read', `reads ${PAGE}`, { file: PAGE, ms: e * 0.2 });
+      if (await has(ctx, PAGE, '(+1 day)')) return recheck(ctx, 'The "(+1 day)" label');
+      if (heard(ctx)) ctx.say(heard(ctx));
+      await swap(ctx, PAGE, "const line = el('div', `${shift.start} to ${shift.end}`, 'shift');", "const line = el('div', `${shift.start} to ${shift.end}${shift.end < shift.start ? ' (+1 day)' : ''}`, 'shift');", `edits ${PAGE}`, e * 0.4);
+      await tests(ctx, e * 0.3);
+      return 'The roster page now shows "(+1 day)" after any end time earlier than its start, e.g. "16:00 to 00:30 (+1 day)". Tests still pass.';
+    },
+  },
+
+  '103-backend': {
+    async run(ctx) {
+      const e = ctx.est;
+      await ctx.step('Read', `reads ${ROSTER}`, { file: ROSTER, ms: e * 0.15 });
+      if (await has(ctx, ROSTER, 'function doubleBookings')) return recheck(ctx, 'The double-booking warnings');
+      if (heard(ctx)) ctx.say(heard(ctx));
+      const fn = [
+        "const DAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];",
+        "const MONTH = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];",
+        "const minutesOf = time => { const [h, m] = time.split(':').map(Number); return h * 60 + m; };",
+        '',
+        '/** One warning per pair of overlapping shifts for the same person on the same day. */',
+        'export function doubleBookings(staff, shifts) {',
+        '  const warnings = [];',
+        '  for (const [id, own] of Object.entries(byStaff(shifts))) {',
+        '    const name = staff.find(person => person.id === id)?.name || id;',
+        '    for (let i = 0; i < own.length; i++) {',
+        '      for (let j = i + 1; j < own.length; j++) {',
+        '        const a = own[i], b = own[j];',
+        '        if (a.date !== b.date || !(minutesOf(a.start) < minutesOf(b.end) && minutesOf(b.start) < minutesOf(a.end))) continue;',
+        '        const d = new Date(`${a.date}T00:00:00Z`);',
+        '        warnings.push(`${name} is double-booked on ${DAY[d.getUTCDay()]} ${d.getUTCDate()} ${MONTH[d.getUTCMonth()]}: ${a.start}-${a.end} and ${b.start}-${b.end}`);',
+        '      }',
+        '    }',
+        '  }',
+        '  return warnings;',
+        '}',
+        '',
+        '/** Everything the roster page shows:',
+      ].join('\n');
+      await swap(ctx, ROSTER, '/** Everything the roster page shows:', fn, `edits ${ROSTER}`, e * 0.25);
+      await swap(ctx, ROSTER, '    // TODO: warn when someone is rostered on two overlapping shifts.\n    warnings: [],', '    warnings: doubleBookings(staff, shifts),', `edits ${ROSTER}`, e * 0.1);
+      const test = [
+        "import test from 'node:test';",
+        "import assert from 'node:assert/strict';",
+        "import { weekView } from '../src/roster.js';",
+        '',
+        "const staff = [{ id: 'ava', name: 'Ava Lindqvist', role: 'Kitchen hand', rate: 27.5 }];",
+        "const view = shifts => weekView({ cafe: 'Test', weekStart: '2026-12-21', staff, shifts });",
+        '',
+        "test('two overlapping shifts on one day give one warning', () => {",
+        "  const { warnings } = view([{ staffId: 'ava', date: '2026-12-24', start: '11:00', end: '15:00' }, { staffId: 'ava', date: '2026-12-24', start: '14:00', end: '18:00' }]);",
+        "  assert.deepEqual(warnings, ['Ava Lindqvist is double-booked on Thu 24 Dec: 11:00-15:00 and 14:00-18:00']);",
+        '});',
+        '',
+        "test('back-to-back shifts are not a double booking', () => {",
+        "  assert.deepEqual(view([{ staffId: 'ava', date: '2026-12-24', start: '08:00', end: '12:00' }, { staffId: 'ava', date: '2026-12-24', start: '12:00', end: '16:00' }]).warnings, []);",
+        '});',
+        '',
+      ].join('\n');
+      await ctx.edit('test/warnings.test.js', test, 'writes test/warnings.test.js', e * 0.2, 'Write');
+      await tests(ctx, e * 0.25);
+      return 'weekView now returns a warning for each pair of overlapping shifts per person, e.g. "Ava Lindqvist is double-booked on Thu 24 Dec: 11:00-15:00 and 14:00-18:00". Back-to-back shifts do not count. Added test/warnings.test.js.';
+    },
+  },
+
+  '103-frontend': {
+    async run(ctx) {
+      const e = ctx.est;
+      await ctx.step('Read', `reads ${PAGE}`, { file: PAGE, ms: e * 0.25 });
+      if (await has(ctx, PAGE, '#warnings:empty')) return recheck(ctx, 'The warning banner');
+      if (heard(ctx)) ctx.say(heard(ctx));
+      await swap(ctx, PAGE, '  #warnings { color: #b42318; font-weight: 600; padding-left: 1.2rem; }', '  #warnings { color: #fff; background: #b42318; font-weight: 600; padding: .6rem 1rem .6rem 2rem; border-radius: 8px; box-shadow: 0 2px 0 #7a1a12; }\n  #warnings:empty { display: none; }', `edits ${PAGE}`, e * 0.4);
+      await tests(ctx, e * 0.25);
+      return 'Warnings now show as a red banner above the roster, and the banner hides itself when there are none. Style only; tests still pass.';
+    },
+  },
+
+  '104-database': {
+    async run(ctx) {
+      const e = ctx.est;
+      await ctx.step('Glob', 'looks for src/*.js', { ms: e * 0.15 });
+      if (await ctx.read(HOLS)) return recheck(ctx, 'The public holiday table');
+      await ctx.edit(HOLS, await solution(HOLS), `writes ${HOLS}`, e * 0.35, 'Write');
+      const test = [
+        "import test from 'node:test';",
+        "import assert from 'node:assert/strict';",
+        "import { publicHoliday } from '../src/holidays.js';",
+        '',
+        "test('Christmas and Boxing Day are public holidays', () => {",
+        "  assert.equal(publicHoliday('2026-12-25'), 'Christmas Day');",
+        "  assert.equal(publicHoliday('2026-12-26'), 'Boxing Day');",
+        '});',
+        '',
+        "test('an ordinary day is not a public holiday', () => {",
+        "  assert.equal(publicHoliday('2026-12-24'), null);",
+        '});',
+        '',
+      ].join('\n');
+      await ctx.edit('test/holidays-table.test.js', test, 'writes test/holidays-table.test.js', e * 0.2, 'Write');
+      await tests(ctx, e * 0.25);
+      return 'Added src/holidays.js with the 2026 Queensland public holidays as a checked-in table, and publicHoliday(date) returning the name or null. Added test/holidays-table.test.js.';
+    },
+  },
+
+  '104-backend': {
+    async run(ctx) {
+      const e = ctx.est;
+      await ctx.step('Read', `reads ${PAY}`, { file: PAY, ms: e * 0.12 });
+      if (await has(ctx, PAY, 'publicHoliday(date)')) return recheck(ctx, 'The public holiday loading');
+      if (heard(ctx)) ctx.say(heard(ctx));
+      if (!(await ctx.read(HOLS))) {
+        ctx.say('There is no holiday table yet, so I added the same src/holidays.js the Database station would.');
+        await ctx.edit(HOLS, await solution(HOLS), `writes ${HOLS}`, e * 0.15, 'Write');
+      }
+      const text = await ctx.read(PAY);
+      await ctx.edit(PAY, "import { publicHoliday } from './holidays.js';\n" + text, `edits ${PAY}`, e * 0.1);
+      await swap(ctx, PAY, 'export function loadingFor(date) {\n', 'export function loadingFor(date) {\n  if (publicHoliday(date)) return 2.5; // a public holiday beats the weekend loading\n', `edits ${PAY}`, e * 0.15);
+      await ctx.edit('test/holidays.test.js', await solution('test/holidays.test.js'), 'writes test/holidays.test.js', e * 0.15, 'Write');
+      await tests(ctx, e * 0.25);
+      return 'loadingFor now pays 2.5x on any public holiday, checked before the weekend loading, so Boxing Day on a Saturday is 2.5x. Added test/holidays.test.js (6 hours on Boxing Day at $30 pays $450).';
+    },
+  },
+
+  '104-frontend': {
+    async run(ctx) {
+      const e = ctx.est;
+      await ctx.step('Read', `reads ${PAGE}`, { file: PAGE, ms: e * 0.2 });
+      if (await has(ctx, PAGE, 'th.holiday')) return recheck(ctx, 'The holiday labels');
+      if (heard(ctx)) ctx.say(heard(ctx));
+      await swap(ctx, PAGE, '  th { background: #2f6f62; color: #fff; font-weight: 600; }\n', '  th { background: #2f6f62; color: #fff; font-weight: 600; }\n  th.holiday { background: #a4441c; }\n', `edits ${PAGE}`, e * 0.2);
+      await swap(ctx, PAGE,
+        "const dayHeading = day => { const th = el('th', day.name); th.append(el('small', day.date.slice(5))); return th; };",
+        "const HOLIDAYS = { '2026-12-25': 'Christmas Day', '2026-12-26': 'Boxing Day', '2026-12-28': 'Boxing Day (additional)' };\nconst dayHeading = day => { const th = el('th', day.name); th.append(el('small', day.date.slice(5))); if (HOLIDAYS[day.date]) { th.className = 'holiday'; th.append(el('small', HOLIDAYS[day.date])); } return th; };",
+        `edits ${PAGE}`, e * 0.3);
+      await tests(ctx, e * 0.25);
+      return 'Public holiday columns on the roster header are now highlighted and labelled with the holiday name (Christmas Day, Boxing Day). Tests still pass.';
+    },
+  },
+
+  '105-integration': {
+    async run(ctx) {
+      const e = ctx.est;
+      await ctx.step('Read', `reads ${SHEET}`, { file: SHEET, ms: e * 0.12 });
+      if (await has(ctx, SHEET, "'loading'")) return recheck(ctx, 'The per-shift timesheet');
+      if (heard(ctx)) ctx.say(heard(ctx));
+      await ctx.step('Read', 'reads test/timesheet.test.js', { file: 'test/timesheet.test.js', ms: e * 0.1 });
+      await ctx.edit(SHEET, await solution(SHEET), `edits ${SHEET}`, e * 0.3);
+      await ctx.edit('test/timesheet.test.js', await solution('test/timesheet.test.js'), 'edits test/timesheet.test.js', e * 0.2);
+      await tests(ctx, e * 0.25);
+      return 'timesheetCsv now writes one row per shift in date order with date, name, role, start, end, hours, loading and pay, then a Total row per person. Cells with commas or quotes are quoted, and an unknown staff id throws. Replaced test/timesheet.test.js to match.';
+    },
+  },
+
+  '105-backend': {
+    async run(ctx) {
+      const e = ctx.est;
+      await ctx.step('Read', `reads ${ROSTER}`, { file: ROSTER, ms: e * 0.15 });
+      if (await has(ctx, ROSTER, 'cost: round2(')) return recheck(ctx, 'The daily wage cost');
+      if (heard(ctx)) ctx.say(heard(ctx));
+      await swap(ctx, ROSTER, '    days: dates.map((date, i) => ({ date, name: DAY_NAMES[i] })),', '    days: dates.map((date, i) => ({ date, name: DAY_NAMES[i], cost: round2(rows.reduce((sum, row) => sum + row.days[i].reduce((s, shift) => s + shift.pay, 0), 0)) })),', `edits ${ROSTER}`, e * 0.35);
+      await ctx.edit('test/day-cost.test.js', await solution('test/day-cost.test.js'), 'writes test/day-cost.test.js', e * 0.2, 'Write');
+      await tests(ctx, e * 0.25);
+      return "weekView().days[] now carries each day's wage cost, summed from everyone rostered that day, and the days add up to the week total. Added test/day-cost.test.js.";
+    },
   },
 };
 
-const DOUBLE_FN = `
-/** Pairs of overlapping shifts worked by the same staff member. */
-export function doubleBookings(shifts) {
-  const pairs = [];
-  for (const mine of Object.values(byStaff(shifts))) {
-    for (let i = 0; i < mine.length; i++) {
-      for (let j = i + 1; j < mine.length; j++) {
-        if (overlaps(mine[i], mine[j])) pairs.push([mine[i], mine[j]]);
-      }
-    }
-  }
-  return pairs;
-}
-`;
-
-const DOUBLE_TESTS = `
-const morning = { staffId: 'a', start: '2026-11-20T09:00:00Z', end: '2026-11-20T13:00:00Z' };
-const lunch = { staffId: 'a', start: '2026-11-20T12:00:00Z', end: '2026-11-20T16:00:00Z' };
-
-test('doubleBookings pairs overlapping shifts for one staff member', () => {
-  assert.deepEqual(doubleBookings([morning, lunch]), [[morning, lunch]]);
-});
-
-test('doubleBookings ignores overlaps between different staff', () => {
-  assert.deepEqual(doubleBookings([morning, { ...lunch, staffId: 'b' }]), []);
-});
-
-test('back-to-back shifts are not double-booked', () => {
-  const evening = { staffId: 'a', start: '2026-11-20T13:00:00Z', end: '2026-11-20T17:00:00Z' };
-  assert.deepEqual(doubleBookings([morning, evening]), []);
-});
-`;
-
-const doubleBooked = {
-  title: 'Double-booked staff report',
-  planFile: ROSTER,
-  plan: `Plan:
-1. src/roster.js already has byStaff() and overlaps(). Build doubleBookings(shifts) from those two.
-2. For each staff member, compare every pair of their shifts once and collect the overlapping pairs.
-3. Add tests in test/roster.test.js: an overlap, the same times for two different staff, and back-to-back shifts.
-4. Run npm test.`,
-  async applies(ctx) { const t = (await ctx.read(ROSTER)) || ''; return t.includes('export function byStaff') && t.includes('export function overlaps'); },
+/** Any item without a recipe: one harmless, real edit in a file of its own, so it never conflicts. */
+export const genericRecipe = {
   async run(ctx) {
-    const testFile = 'test/roster.test.js';
-    await ctx.step('Read', `reads ${ROSTER}`, { file: ROSTER, ms: 1500 });
-    if (ctx.kind === 'conflict') await mergeMain(ctx);
-    const text = await ctx.read(ROSTER);
-    const tests = await ctx.read(testFile);
-    if (text.includes('doubleBookings') && (tests == null || tests.includes('doubleBookings'))) {
-      if (ctx.kind === 'conflict') { await ctx.step('Bash', 'runs npm test', { ms: 2200 }); return `Merged ${ctx.mainBranch}. doubleBookings() is unchanged and the tests pass.`; }
-      return nothingLeft(ctx, 'doubleBookings()');
-    }
+    const e = ctx.est;
+    await ctx.step('Glob', 'looks for src/**/*.js', { ms: e * 0.2 });
+    await ctx.step('Read', 'reads src/roster.js', { file: 'src/roster.js', ms: e * 0.2 });
     if (heard(ctx)) ctx.say(heard(ctx));
-    await ctx.step('Grep', 'searches for overlaps', { ms: 1500 });
-    if (!text.includes('doubleBookings')) await ctx.edit(ROSTER, text.trimEnd() + '\n' + DOUBLE_FN, `edits ${ROSTER}`, 4000);
-    await ctx.step('Read', `reads ${testFile}`, { file: testFile, ms: 1500 });
-    if (tests != null && !tests.includes('doubleBookings')) {
-      const withImport = tests.replace("import { overlaps } from '../src/roster.js';", "import { overlaps, doubleBookings } from '../src/roster.js';");
-      await ctx.edit(testFile, withImport.trimEnd() + '\n' + DOUBLE_TESTS, `edits ${testFile}`, 4000);
-    }
-    await ctx.step('Bash', 'runs npm test', { ms: 2500 });
-    return `Added doubleBookings(shifts) to ${ROSTER}. It groups shifts with byStaff() and returns each overlapping pair once, using the existing overlaps(). Tests in ${testFile} cover an overlap, two different staff at the same time, and back-to-back shifts. npm test passes.`;
+    const file = `notes/item-${String(ctx.itemKey || 'x').replace(/[^\w.-]/g, '')}.md`;
+    const prev = (await ctx.read(file)) || `# ${ctx.title}\n\n`;
+    await ctx.edit(file, prev + `- ${ctx.kind === 'first' ? 'Request' : 'Follow-up'}: ${String(ctx.ask || ctx.title).slice(0, 300)}\n`, `writes ${file}`, e * 0.3, 'Write');
+    await tests(ctx, e * 0.3);
+    return `Simulated chef: this item has no scripted recipe, so I wrote the request up in ${file} and ran the tests. Hire real chefs to cook free-text items properly.`;
   },
 };
 
-const EXPORT_SRC = `import { byStaff } from './roster.js';
-import { shiftHours, weeklyPay, round2 } from './pay.js';
-
-/** Quotes a CSV cell when it holds a comma, a quote or a line break. */
-const cell = value => {
-  const s = String(value);
-  return /[",\\r\\n]/.test(s) ? \`"\${s.replace(/"/g, '""')}"\` : s;
-};
-
-/** CSV of the week's pay, one row per staff member: name, hours, pay. */
-export function weeklyPayCsv(shifts, staffById) {
-  const rows = [['name', 'hours', 'pay']];
-  for (const [staffId, mine] of Object.entries(byStaff(shifts))) {
-    const staff = staffById[staffId];
-    if (!staff) throw new Error(\`No staff record for \${staffId}\`);
-    const hours = round2(mine.reduce((sum, s) => sum + shiftHours(s), 0));
-    rows.push([staff.name, hours, weeklyPay(mine, staff).toFixed(2)]);
-  }
-  return rows.map(row => row.map(cell).join(',')).join('\\n') + '\\n';
-}
-`;
-
-const EXPORT_TEST = `import test from 'node:test';
-import assert from 'node:assert/strict';
-import { weeklyPayCsv } from '../src/export.js';
-
-const shifts = [
-  { staffId: 'a', start: '2026-11-16T09:00:00Z', end: '2026-11-16T17:00:00Z' },
-  { staffId: 'a', start: '2026-11-17T09:00:00Z', end: '2026-11-17T13:00:00Z' },
-  { staffId: 'b', start: '2026-11-16T10:00:00Z', end: '2026-11-16T16:00:00Z' },
-];
-const staffById = { a: { name: 'Ada Park', rate: 30 }, b: { name: 'Okafor, Ben', rate: 25 } };
-
-test('one row per staff member with hours and pay', () => {
-  assert.equal(weeklyPayCsv(shifts, staffById), 'name,hours,pay\\nAda Park,12,360.00\\n"Okafor, Ben",6,150.00\\n');
-});
-
-test('a quote in a name is doubled', () => {
-  const csv = weeklyPayCsv([shifts[2]], { b: { name: 'Ben "Benny" Okafor', rate: 25 } });
-  assert.equal(csv.split('\\n')[1], '"Ben ""Benny"" Okafor",6,150.00');
-});
-
-test('an empty roster is only the header', () => {
-  assert.equal(weeklyPayCsv([], staffById), 'name,hours,pay\\n');
-});
-
-test('a shift for unknown staff is an error', () => {
-  assert.throws(() => weeklyPayCsv(shifts, { a: staffById.a }), /No staff record for b/);
-});
-`;
-
-const csvExport = {
-  title: 'Weekly pay CSV export',
-  planFile: PAY,
-  plan: `Plan:
-1. Weekly pay must round once, not per shift. Split shiftPay in src/pay.js into shiftPayExact (unrounded) and shiftPay, and add weeklyPay(shifts, staff).
-2. Add src/export.js with weeklyPayCsv(shifts, staffById): group with byStaff(), one row per staff member.
-3. Quote cells that hold a comma, a quote or a line break. That is a few lines, so no CSV dependency is needed.
-4. Add test/export.test.js: a normal week, a comma in a name, a quote in a name, an empty roster, unknown staff.
-5. Run npm test.
-Risk: this rewrites shiftPay, the same lines the overtime order changes.`,
-  async applies(ctx) { return setPay(await ctx.read(PAY), {}) != null && (await ctx.read(ROSTER) || '').includes('export function byStaff'); },
-  async run(ctx) {
-    const testFile = 'test/export.test.js';
-    await ctx.step('Read', `reads ${PAY}`, { file: PAY, ms: 1500 });
-    if (ctx.kind === 'conflict') {
-      const conflicted = await mergeMain(ctx, { [PAY]: theirs => setPay(theirs, { exact: true }) });
-      const merged = await ctx.read(PAY);
-      if (!detectPay(merged).exact) await ctx.edit(PAY, setPay(merged, { exact: true }), `edits ${PAY}`, 2000);
-      await ctx.step('Bash', 'runs npm test', { ms: 2500 });
-      return `Merged ${ctx.mainBranch}${conflicted.length ? ` and resolved ${conflicted.join(', ')}` : ''}. shiftPayExact now carries whatever pay rule main has, and shiftPay and weeklyPay round it. npm test passes.`;
-    }
-    const text = await ctx.read(PAY);
-    const done = detectPay(text).exact && await ctx.read(EXPORT) && await ctx.read(testFile);
-    if (done) return nothingLeft(ctx, 'The CSV export');
-    if (heard(ctx)) ctx.say(heard(ctx));
-    await ctx.step('Read', `reads ${ROSTER}`, { file: ROSTER, ms: 1500 });
-    if (!detectPay(text).exact) {
-      ctx.say('Summing rounded shift pay drifts by a cent over a week, so pay.js gets an unrounded shiftPayExact and a weeklyPay that rounds once.');
-      await ctx.edit(PAY, setPay(text, { exact: true }), `edits ${PAY}`, 4500);
-    }
-    if (!await ctx.read(EXPORT)) {
-      if (ctx.kind === 'first' && ctx.wantsAsk()) {
-        const allowed = await ctx.permit('npm install csv-stringify');
-        ctx.say(allowed
-          ? 'Thanks. On a second look the quoting rule is four lines, so I wrote it by hand and left package.json alone.'
-          : 'No new dependency, then. Writing the quoting by hand.');
-      }
-      await ctx.edit(EXPORT, EXPORT_SRC, `writes ${EXPORT}`, 5000, 'Write');
-    }
-    if (!await ctx.read(testFile)) await ctx.edit(testFile, EXPORT_TEST, `writes ${testFile}`, 4500, 'Write');
-    await ctx.step('Bash', 'runs npm test', { ms: 2500 });
-    return `Added ${EXPORT} with weeklyPayCsv(shifts, staffById): one row per staff member with name, hours and pay, and cells quoted when they hold a comma, quote or line break. ${PAY} gains shiftPayExact and weeklyPay so the weekly total rounds once; shiftPay behaves as before. No new dependency. Look closely at ${PAY}: it rewrites shiftPay, which the overtime order also changes.`;
-  },
-};
-
-const RECIPES = [weeklyHours, overtime, doubleBooked, csvExport];
-const key = s => String(s || '').trim().toLowerCase();
-
-/** The recipe for a starter-order title, or null for anything else. */
-export function recipeFor(title) {
-  return RECIPES.find(r => key(r.title) === key(title)) || null;
+export function recipeFor(presetId) {
+  return recipes[presetId] || null;
 }

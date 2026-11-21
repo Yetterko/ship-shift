@@ -1,7 +1,7 @@
 {
   "name": "ship-shift",
   "version": "0.1.0",
-  "description": "A gamified agentic development environment: run Claude coding agents like a kitchen line.",
+  "description": "Run Claude coding agents like a restaurant: you are the waiter, your agents are the customers and the chefs, and you still get your break.",
   "main": "server/index.mjs",
   "scripts": {
     "start": "node server/index.mjs",
@@ -11,16 +11,17 @@
     "share": "node server/share.mjs",
     "check": "node server/check.mjs",
     "smoke": "node test/smoke.mjs",
-    "ui": "node test/ui.mjs",
     "game": "node test/game.mjs",
-    "sharetest": "node test/share.mjs"
+    "publictest": "node test/public.mjs"
   },
   "license": "UNLICENSED",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.330",
+    "@anthropic-ai/sdk": "^1.12.0",
     "qrcode-terminal": "^0.12.0",
     "three": "^0.187.0",
-    "ws": "^8.23.0"
+    "ws": "^8.23.0",
+    "zod": "^4.6.7"
   },
   "private": true,
   "type": "module",

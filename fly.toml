@@ -1,6 +1,7 @@
 # Fly.io: Ship Shift's public demo mode. `fly launch --copy-config --ha=false` asks for the app name and region.
 # Kitchens live in one machine's memory and disk, so run exactly one machine.
 app = "ship-shift"
+primary_region = "syd"   # closest to Brisbane
 
 [build]
   dockerfile = "Dockerfile"
@@ -14,9 +15,10 @@ app = "ship-shift"
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"
+  # demo day: keep one machine warm so the first judge never waits for a cold start
+  auto_stop_machines = "off"
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
 
   [http_service.concurrency]
     type = "requests"

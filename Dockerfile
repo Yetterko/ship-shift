@@ -1,22 +1,23 @@
-# Ship Shift in public demo mode: a private, simulated kitchen per visitor. No Claude credentials are needed or used.
+# Ship Shift in public mode: a private restaurant per visitor, each with its own git copy of the roster-cafe project.
+# Set SHIP_SHARED_KEY as a secret for Claude (Haiku) customer reviews; without it the customers are scripted and nothing costs money.
 FROM node:22-slim
 
-# The kitchens are real git repos with real worktrees and merges.
+# The restaurants are real git repos with real worktrees and merges.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY package.json package-lock.json ./
-# The Agent SDK is only ever loaded by a real chef. Public mode has none, so it is removed from the image outright.
+# @anthropic-ai/sdk writes the customers' reviews; the Agent SDK runs real chefs for visitors who bring their own key.
 RUN npm ci --omit=dev \
- && rm -rf node_modules/@anthropic-ai \
  && npm cache clean --force
 COPY . .
 
 ENV NODE_ENV=production \
     SHIP_PUBLIC=1 \
     SHIP_SESSIONS_DIR=/tmp/ship-shift/sessions \
+    SHIP_FLAGSHIP_DIR=/tmp/ship-shift/flagship \
     PORT=8080
 EXPOSE 8080
 USER node

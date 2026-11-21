@@ -114,9 +114,9 @@ document.fonts?.ready.then(() => Promise.all([document.fonts.load('40px Bungee')
 
 /* ---------- camera: fits the room into the free part of the stage ---------- */
 const DIR = V(0, 15, 10.4).normalize();
-const CENTRE = V(-0.2, 0, -0.35);
+const CENTRE = V(0.95, 0, -0.3);
 const FIT = [];
-for (const x of [-7.75, 7.6]) for (const [y, z] of [[0, -4.9], [2.55, -4.9], [0, 3.95], [0.6, 3.95]]) FIT.push(V(x, y, z));
+for (const x of [-6.5, 8.5]) for (const [y, z] of [[0, -4.2], [2.2, -4.2], [0, 3.95], [0.6, 3.95]]) FIT.push(V(x, y, z));
 const view = { dist: 24, sx: 0, sy: 0, tDist: 24, tsx: 0, tsy: 0, dock: 0, shake: 0, shakeAmp: 0, snap: true, calm: false, top: 58 };
 const look = CENTRE.clone();
 const pv = V();

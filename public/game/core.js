@@ -8,19 +8,21 @@ export const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').match
 /** The latest server snapshot lives in G.S. */
 export const G = { S: null, offset: 0 };
 export const nowS = () => Date.now() + G.offset;
-export const orderOf = id => G.S?.orders.find(o => o.id === id);
+export const customerById = id => G.S?.customers.find(c => c.id === Number(id));
+export const itemById = id => G.S?.items.find(i => i.id === Number(id));
 export const chefById = id => G.S?.chefs.find(c => c.id === id);
 export const chefName = id => chefById(id)?.name || id;
 export const questionFor = chefId => G.S?.questions.find(q => q.chefId === chefId);
-export const escalation = () => {
-  const pace = G.S?.pace || 1;
-  return { smokeMs: G.S?.escalation?.smokeMs ?? 20000 / pace, fireMs: G.S?.escalation?.fireMs ?? 60000 / pace };
-};
-/** 'claude-opus-5-5' -> 'Opus 5.5' */
-/** The demo's short shift with simulated chefs plays as one arcade round: nothing is held back for a break. */
-export const arcade = () => G.S?.driver === 'sim' && (G.S.shift?.focusMin ?? 25) <= 5;
-/** True while a pomodoro focus block is holding questions back. Never in an arcade round. */
-export const quiet = () => G.S?.shift?.mode === 'focus' && !arcade();
+/** True when this page only watches someone else's restaurant. */
+export const watching = () => location.pathname.startsWith('/watch');
+/** The four work stations. The server has the same list in server/restaurant.mjs. */
+export const STATION = [
+  { id: 'backend', name: 'Backend', color: '#4aa3d8' },
+  { id: 'frontend', name: 'Frontend', color: '#f2a03a' },
+  { id: 'database', name: 'Database', color: '#57b86a' },
+  { id: 'integration', name: 'Integration', color: '#c873d6' },
+];
+export const stationName = id => STATION.find(s => s.id === id)?.name || id;
 /** A title card, help sheet or dialog is in front of the kitchen: the keys belong to it. */
 export const modal = () => !!document.querySelector('dialog[open], .overlay.open');
 /** localStorage that never throws (private windows, blocked storage). */
@@ -89,5 +91,10 @@ export const ICON = {
   hat: svg('<path d="M7 14.500a4.200 4.200 0 0 1 1-8.200 4.600 4.600 0 0 1 8 0 4.200 4.200 0 0 1 1 8.200V19.500H7z" fill="none" stroke="currentColor" stroke-width="2.400" stroke-linejoin="round"/><path d="M7 16.500h10" stroke="currentColor" stroke-width="2"/>'),
   eye: svg('<path d="M2.500 12c2.500-4.500 5.700-6.500 9.500-6.500s7 2 9.500 6.500c-2.500 4.500-5.700 6.500-9.500 6.500s-7-2-9.500-6.500z" fill="none" stroke="currentColor" stroke-width="2.400" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="currentColor"/>'),
   rocket: svg('<path d="M12 2.500c3.500 2.500 5 6 5 9.500l-2 4H9l-2-4c0-3.500 1.500-7 5-9.500z" fill="none" stroke="currentColor" stroke-width="2.400" stroke-linejoin="round"/><circle cx="12" cy="10" r="1.900" fill="currentColor"/><path d="M10 19.500l2 2.500 2-2.500" fill="none" stroke="currentColor" stroke-width="2.400" stroke-linecap="round" stroke-linejoin="round"/>'),
+  hand: svg('<path d="M8 13V6.500a1.500 1.500 0 0 1 3 0V11m0-5.500V4.500a1.500 1.500 0 0 1 3 0V11m0-5a1.500 1.500 0 0 1 3 0v5m0-3a1.500 1.500 0 0 1 3 0v6c0 4-2.500 6.500-6.500 6.500-3 0-4.500-1.500-6-4l-2.300-3.800a1.500 1.500 0 0 1 2.500-1.600L8 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'),
+  bell: svg('<path d="M6 16.500V11a6 6 0 0 1 12 0v5.500l1.500 2H4.500zM10 20.500a2 2 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="2.400" stroke-linejoin="round"/>'),
+  key: svg('<circle cx="8" cy="15" r="4.500" fill="none" stroke="currentColor" stroke-width="2.400"/><path d="M11.500 12L20 3.500M17 6.500l2.500 2.500M14.500 9l2 2" fill="none" stroke="currentColor" stroke-width="2.400" stroke-linecap="round"/>'),
+  mug: svg('<path d="M5 8h11v7a4 4 0 0 1-4 4H9a4 4 0 0 1-4-4zM16 10h1.500a2.500 2.500 0 0 1 0 5H16M8 3.500c0 1.500 1 1.500 1 3M11.500 3.500c0 1.500 1 1.500 1 3" fill="none" stroke="currentColor" stroke-width="2.200" stroke-linecap="round" stroke-linejoin="round"/>'),
+  trophy: svg('<path d="M8 4h8v5a4 4 0 0 1-8 0zM8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4M12 13v4M8.500 20.500h7M10 17h4" fill="none" stroke="currentColor" stroke-width="2.200" stroke-linecap="round" stroke-linejoin="round"/>'),
   pencil: svg('<path d="M4 20l1-4.500L16.500 4l3.500 3.500L8.500 19z" fill="none" stroke="currentColor" stroke-width="2.400" stroke-linejoin="round"/>'),
 };

@@ -1,22 +1,19 @@
-// Headless run of the 3D kitchen with simulated chefs. It plays one whole order the way a person would:
-// walk (with collision), hand out tickets, prep, spice, answer in the bubble, taste, call out, review, carry, ship.
+// Headless run of the restaurant with simulated chefs, at a phone's landscape size. It plays one order the way a judge would:
+// open the restaurant, seat a customer, send a special, take a break, answer the bell, taste the dish, serve it, bill.
 // Usage: node test/game.mjs [screenshot-dir]. Never opens a visible window and never runs a real agent.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
-import { ensureDemoRepo, STARTER_ORDERS } from '../server/demo-repo.mjs';
 
 const shots = process.argv[2];
 if (shots) await fs.mkdir(shots, { recursive: true });
-const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ship-shift-3d-'));
-const repo = path.join(tmp, 'repo');
-await ensureDemoRepo(repo);
+const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ship-shift-game-'));
 const PORT = 4697;
-const server = spawn(process.execPath, ['server/index.mjs'], {
-  env: { ...process.env, SHIP_SIM: '1', SHIP_SIM_SPEED: '2', SHIP_SIM_ASK: '', SHIP_REAL_CHEFS: '', SHIP_CHEF_MODELS: '', SHIP_PACE: '', SHIP_DEMO: '', SHIP_REPO: repo, SHIP_DATA: path.join(tmp, 'data'), PORT: String(PORT) },
-  stdio: 'ignore', windowsHide: true,
+const server = spawn(process.execPath, ['server/index.mjs', '--demo'], {
+  env: { ...process.env, SHIP_SIM_SPEED: '3', SHIP_DATA: path.join(tmp, 'data'), SHIP_SHARED_KEY: '', ANTHROPIC_API_KEY: '', PORT: String(PORT) },
+  stdio: ['ignore', 'ignore', 'inherit'], windowsHide: true,
 });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const base = `http://127.0.0.1:${PORT}`;
@@ -31,152 +28,112 @@ async function findChrome() {
   }
 }
 
-const errors = [], offHost = [];
+const errors = [];
 let passed = 0, browser, page;
 const ok = (cond, msg) => { if (!cond) throw new Error('FAILED: ' + msg); passed++; console.log('  ok', msg); };
 const shot = async name => { if (shots) await page.screenshot({ path: path.join(shots, `${name}.png`) }); };
+const S = () => page.evaluate(() => window.__ship.state);
+const go = spec => page.evaluate(s => window.__ship.go(s), spec);
+const waitFor = (fn, arg, ms = 30000) => page.waitForFunction(fn, arg, { timeout: ms });
 
 try {
-  for (let i = 0; i < 50; i++) { try { await fetch(`${base}/api/state`); break; } catch { await sleep(200); } }
-  // #1 Weekly hours (S), #2 Overtime (M, asks a question), #3 CSV export (L, asks to npm install)
-  for (const o of [STARTER_ORDERS[0], STARTER_ORDERS[1], STARTER_ORDERS[3]]) {
-    await fetch(`${base}/api/orders`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(o) });
-  }
+  for (let i = 0; i < 60; i++) { try { await fetch(`${base}/api/state`); break; } catch { await sleep(250); } }
   browser = await chromium.launch({ headless: true, executablePath: await findChrome(), args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
-  page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const w = Number(process.env.SHIP_W || 844), h = Number(process.env.SHIP_H || 390);
+  page = await browser.newPage({ viewport: { width: w, height: h }, hasTouch: true, deviceScaleFactor: 2 });
   page.on('pageerror', e => errors.push(e.message));
   page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
-  page.on('request', r => { const u = new URL(r.url()); if (!['127.0.0.1', 'localhost'].includes(u.hostname) && !['data:', 'blob:'].includes(u.protocol)) offHost.push(r.url()); });
   await page.goto(base + '/');
   await page.waitForSelector('canvas');
-  await page.waitForFunction(() => window.__ship?.state && document.querySelectorAll('.tk').length >= 3, null, { timeout: 30000 });
+  await waitFor(() => window.__ship?.state);
   await page.evaluate(() => document.fonts.ready);
-  await sleep(2500);
-
-  const ship = fn => page.evaluate(fn);
-  const order = id => page.evaluate(id => window.__ship.state.orders.find(o => o.id === id), id);
-  const walk = async (id, until, ms = 20000, arg) => {
-    await page.evaluate(id => window.__ship.walkTo(id), id);
-    await page.waitForFunction(until, arg, { timeout: ms });
-  };
-  const slotFor = id => page.evaluate(id => `slot${window.__ship.slotOf.get(id)}`, id);
-  const pos = () => ship(() => ({ x: window.__ship.player.g.position.x, z: window.__ship.player.g.position.z }));
-
-  /* ---------- the picture ---------- */
+  await sleep(1200);
   await shot('01-start');
-  const look = await ship(() => window.__ship.look());
-  ok(look.floorFrac >= 0.72, `the floor fills ${(look.floorFrac * 100).toFixed(0)}% of the stage width (72% or more)`);
-  ok(look.chefPx >= 90, `a chef stands ${Math.round(look.chefPx)}px tall (90px or more)`);
-  ok(look.labels >= 7 && look.overlaps === 0, `${look.labels} labels on screen, none overlapping`);
-  ok((await ship(() => window.__ship.state.chefs.length)) === 4, 'four chefs on the line');
+  ok(await page.locator('#start.open').count() === 1, 'the start screen is up before the shift');
+  await page.click('#startBtn');
+  await waitFor(() => window.__ship.state.shift.phase === 'service');
+  await sleep(800);
+  await shot('02-floor');
+  ok((await S()).customers.filter(c => c.state === 'in_line').length === 5, 'five customers wait in the line');
 
-  /* ---------- walking and collision ---------- */
-  const p0 = await pos();
-  await page.keyboard.down('KeyS'); await sleep(1500); await page.keyboard.up('KeyS');
-  const p1 = await pos();
-  ok(p1.z > p0.z + 0.3 && p1.z <= 0.105, `walking down stops at the island (z ${p0.z.toFixed(2)} -> ${p1.z.toFixed(2)})`);
-  await page.keyboard.down('KeyS'); await page.keyboard.down('KeyD'); await sleep(900); await page.keyboard.up('KeyS'); await page.keyboard.up('KeyD');
-  const p2 = await pos();
-  ok(p2.x > p1.x + 0.5, `and slides along it instead of sticking (x ${p1.x.toFixed(2)} -> ${p2.x.toFixed(2)})`);
-  await page.keyboard.down('KeyW'); await page.keyboard.press('ShiftLeft'); await sleep(1800); await page.keyboard.up('KeyW');
-  const p3 = await pos();
-  ok(p3.z >= -2.41 && p3.z < -2.2, `a dash up the room stops at the stoves (z ${p3.z.toFixed(2)})`);
-  // a walk across the room goes round the island, never through it
-  await page.evaluate(() => { const s = window.__ship; s.trail = []; s.trailT = setInterval(() => s.trail.push(s.blocked(s.player.g.position.x, s.player.g.position.z, 0.25)), 30); });
-  await walk('prep', () => window.__ship.near === 'prep' && !window.__ship.player.path);
-  await walk('bin', () => window.__ship.near === 'bin' && !window.__ship.player.path);
-  const trail = await ship(() => { const s = window.__ship; clearInterval(s.trailT); return { n: s.trail.length, hit: s.trail.filter(Boolean).length }; });
-  ok(trail.n > 5 && trail.hit === 0, `path finding walked to the prep board and the bin without touching a counter (${trail.n} samples)`);
-
-  /* ---------- tickets ---------- */
-  await walk(await slotFor(1), () => window.__ship.player.carry?.id === 1);
-  await walk('chef0', () => window.__ship.state.chefs[0].orderId === 1);
-  ok(true, 'took ticket #1 from the window and gave it to Pixel');
-
-  await walk(await slotFor(3), () => window.__ship.player.carry?.id === 3);
-  await walk('prep', () => window.__ship.state.orders.find(o => o.id === 3).plan, 30000);
-  ok(true, 'the prep board planned ticket #3');
-  await walk('jar-install', () => window.__ship.player.carry?.type === 'jar');
-  await walk('prep', () => window.__ship.state.orders.find(o => o.id === 3).grants?.includes('install'));
-  ok((await ship(() => window.__ship.player.carry)) === null, 'shook the Install jar onto ticket #3, and the jar went back to the rack');
-  await shot('02-prep-and-spice');
-  await walk('prep', () => window.__ship.player.carry?.id === 3);
-  await walk('chef2', () => window.__ship.state.chefs[2].orderId === 3);
-
-  /* ---------- a blocked chef: answer in the bubble, nothing pauses ---------- */
-  await walk(await slotFor(2), () => window.__ship.player.carry?.id === 2);
-  await walk('chef1', () => window.__ship.state.chefs[1].orderId === 2);
-  await page.waitForFunction(() => window.__ship.state.questions.some(q => q.orderId === 2), null, { timeout: 30000 });
-  await walk('chef1', () => document.querySelector('.bub li[data-key="1"]'));
-  await sleep(400);
-  await shot('03-question-bubble');
-  ok(!(await page.locator('dialog[open]').count()), 'the question is a bubble over the chef, not a dialog');
-  const before = await ship(() => window.__ship.fx.sounds);
-  await page.keyboard.press('Digit1');
-  await page.waitForFunction(() => !window.__ship.state.questions.some(q => q.orderId === 2), null, { timeout: 10000 });
-  ok((await ship(() => window.__ship.fx.sounds)) > before, 'key 1 answered it');
-
-  /* ---------- call out, then taste ---------- */
-  await page.waitForFunction(() => window.__ship.state.orders.find(o => o.id === 2).state === 'cooking' && !window.__ship.state.questions.length, null, { timeout: 10000 });
-  await page.keyboard.press('KeyF');
-  await page.waitForSelector('#lineInput:focus', { timeout: 5000 });
-  await page.keyboard.type('use round2');
-  await page.keyboard.press('Enter');
-  await page.waitForFunction(() => window.__ship.state.stats.steers >= 1 && window.__ship.state.orders.find(o => o.id === 2).activity.some(a => /called out: use round2/.test(a.text)), null, { timeout: 10000 });
-  ok(true, 'F called out one line and the chef heard it');
-  await page.waitForFunction(() => window.__ship.state.orders.find(o => o.id === 2).state === 'cooking', null, { timeout: 10000 });
-  await page.keyboard.press('KeyE');
-  await page.waitForFunction(() => window.__ship.ui.taste === 'chef1' && window.__ship.ui.wip && !window.__ship.ui.wip.error && document.querySelector('.wip .file'), null, { timeout: 10000 });
+  // seat Mia from her docket
+  await go('line:1');
+  await waitFor(() => window.__ship.ui.mode === 'docket', null, 15000);
+  await sleep(400); await shot('03-docket');
+  await page.click('[data-act="seat"]');
+  await waitFor(() => window.__ship.state.customers[0].state === 'seated');
+  ok(true, 'Mia is seated from her ticket docket');
+  // take her order: the pad opens with her special already on it
+  await sleep(600);
+  await go('table:1');
+  await waitFor(() => window.__ship.ui.mode === 'pad', null, 15000);
+  await sleep(400); await shot('04-pad');
+  ok(await page.locator('.pline').count() === 1, 'the order pad starts with the special');
+  await page.click('[data-act="send"]');
+  await waitFor(() => window.__ship.state.items.length === 1);
+  ok(true, 'one ticket goes on the rail');
+  // seat Raj and send both of his specials
+  await go('line:2'); await waitFor(() => window.__ship.ui.mode === 'docket', null, 15000); await page.click('[data-act="seat"]');
+  await waitFor(() => window.__ship.state.customers[1].state === 'seated');
   await sleep(500);
-  await shot('04-taste');
-  ok(true, 'E at a cooking chef tastes the pot: the live diff is in the focus card');
-  ok((await order(3)).state !== 'waiting' && !(await ship(() => window.__ship.state.questions.some(q => q.orderId === 3 && q.kind === 'permission'))), 'the spiced CSV order is cooking without asking to install');
+  await go('table:2'); await waitFor(() => window.__ship.ui.mode === 'pad', null, 15000);
+  await page.click('.spc[data-act="chip"]');
+  ok(await page.locator('.pline').count() === 2, 'tapping a special adds a second line');
+  await page.click('[data-act="send"]');
+  await waitFor(() => window.__ship.state.items.length === 3);
+  await waitFor(() => window.__ship.state.chefs.every(c => c.state === 'cooking'), null, 15000);
+  await sleep(1000); await shot('05-cooking');
+  ok(true, 'both chefs are cooking at two stations');
+  // peek at a station
+  await go('station:backend'); await waitFor(() => window.__ship.ui.mode === 'peek', null, 15000);
+  await sleep(1600); await shot('06-peek');
+  await page.click('[data-act="close"]');
 
-  /* ---------- the plate rides to the pass on its own ---------- */
-  await page.waitForFunction(() => window.__ship.state.orders.find(o => o.id === 1).state === 'at_pass' && window.__ship.plates.get(1)?.mv.key?.startsWith('pass') && window.__ship.plates.get(1).mv.t >= 1, null, { timeout: 60000 });
-  ok((await ship(() => window.__ship.player.carry)) === null, 'plate #1 went chef -> oven -> pass by itself; the player never carried it');
-  await shot('05-plate-at-pass');
+  // the break, then the bell
+  // the button hops while it glows, so press it the moment the break is allowed
+  await waitFor(() => window.__ship.state.shift.eligible && !document.getElementById('breakBtn').disabled && (document.getElementById('breakBtn').click(), true), null, 15000);
+  await waitFor(() => window.__ship.state.shift.phase === 'break');
+  await sleep(500); await shot('07-staffroom');
+  ok(await page.locator('#staff.open').count() === 1, 'the staff room covers the floor during the break');
+  await waitFor(() => window.__ship.state.shift.phase === 'bell', null, 40000);
+  await sleep(500); await shot('08-bell');
+  ok(true, 'the bell rings after the cooldown, once a dish is ready');
+  await page.click('#backBtn');
+  await waitFor(() => window.__ship.state.shift.phase === 'service');
 
-  /* ---------- review, docked, with the kitchen still running ---------- */
-  const slot = await ship(() => `pass${window.__ship.passSlotOf.get(1)}`);
-  await walk(slot, () => document.querySelector('#review.open .hunk'));
-  await sleep(900);
-  ok(!(await page.locator('dialog[open]').count()) && (await ship(() => { const r = document.getElementById('review').getBoundingClientRect(); return r.left / innerWidth; })) > 0.5, 'review opened as a panel docked on the right');
-  const hunks = await page.locator('#review .hunk').count();
-  for (let i = 0; i < hunks; i++) await page.keyboard.press('KeyJ');
-  await page.keyboard.press('KeyK');
-  await sleep(200);
-  ok(await ship(() => window.__ship.diffSeen(window.__ship.state.orders.find(o => o.id === 1))), `J and K walked all ${hunks} hunks, so the diff counts as seen`);
-  const tools = await ship(() => window.__ship.state.orders.reduce((n, o) => n + o.activity.length, 0));
-  await shot('06-review-docked');
-  await page.keyboard.press('Enter');
-  await page.waitForFunction(() => window.__ship.state.orders.find(o => o.id === 1).approved === true, null, { timeout: 10000 });
-  ok((await order(1)).state === 'at_pass', 'Enter approved it; nothing merged yet');
-  await page.waitForFunction(() => !document.querySelector('#review.open'));
-
-  /* ---------- carry the approved plate to the hatch ---------- */
-  await sleep(500);
-  await shot('07-approved-cloche');
-  await walk(slot, () => window.__ship.player.carry?.type === 'plate' && window.__ship.player.carry.id === 1);
-  const fx0 = await ship(() => ({ ...window.__ship.fx }));
-  await walk('hatch', () => window.__ship.state.orders.find(o => o.id === 1).state === 'shipped', 20000);
-  await sleep(700);
-  await shot('08-shipped');
-  const fx1 = await ship(() => ({ ...window.__ship.fx })), st = await ship(() => window.__ship.state.stats);
-  ok(st.shipped === 1 && st.blindShips === 0, `carried it to the hatch and shipped #1 to main, score ${st.score}`);
-  ok(fx1.popups > fx0.popups && fx1.shakes > fx0.shakes && fx1.sounds > fx0.sounds, `juice fired: ${fx1.popups} popups, ${fx1.shakes} shakes, ${fx1.sounds} sounds`);
-  ok((await ship(() => window.__ship.state.orders.reduce((n, o) => n + o.activity.length, 0))) > tools, 'the other chefs kept working the whole time');
-
-  ok(offHost.length === 0, `no network requests left 127.0.0.1${offHost.length ? ': ' + offHost.join(', ') : ''}`);
-  if (errors.length) throw new Error('Page errors:\n' + errors.join('\n'));
-  console.log(`3D game check passed (${passed} checks)`);
+  // taste and serve
+  await go('counter'); await waitFor(() => window.__ship.ui.mode === 'plate', null, 15000);
+  await waitFor(() => document.querySelectorAll('#pDiff .hunk').length > 0, null, 10000);
+  for (let i = 0; i < 12; i++) { await page.evaluate(() => { document.getElementById('pDiff').scrollTop += 120; document.getElementById('pBody').scrollTop += 150; }); await sleep(120); }
+  await sleep(300); await shot('09-plate');
+  const plated = await page.evaluate(() => window.__ship.ui.itemId);
+  await page.click('[data-act="serve"]');
+  await waitFor(id => window.__ship.state.items.find(i => i.id === id).state === 'served', plated);
+  ok(true, 'the dish is served from the plate card');
+  // feedback and the bill (Mia, or whoever was served first)
+  const cid = (await S()).items.find(i => i.id === plated).customerId;
+  await waitFor(id => window.__ship.state.customers.find(c => c.id === id).state === 'feedback_ready', cid, 20000);
+  const table = (await S()).customers.find(c => c.id === cid).tableId;
+  await go(`table:${table}`); await waitFor(() => window.__ship.ui.mode === 'feedback' || window.__ship.ui.mode === 'table', null, 15000);
+  await sleep(400); await shot('10-feedback');
+  if ((await S()).customers.find(c => c.id === cid).lastVerdict === 'satisfied') {
+    await page.click('[data-act="bill"]');
+    await waitFor(id => window.__ship.state.customers.find(c => c.id === id).state === 'paid', cid, 15000);
+    await sleep(1200); await shot('11-receipt');
+    ok(await page.locator('.receipt .r-paid').count() === 1, 'the bill prints a receipt with the merge commit');
+  }
+  const look = await page.evaluate(() => window.__ship.look());
+  ok(look.floorFrac > 0.4, `the floor fills the screen (${Math.round(look.floorFrac * 100)}%)`);
+  ok(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''}`);
+  console.log(`${passed} checks passed`);
 } catch (e) {
-  console.error(e.message); if (errors.length) console.error(errors.join('\n'));
+  console.error(e.message);
+  if (errors.length) console.error('page errors:', errors.slice(0, 5).join('\n'));
   if (page) await shot('99-failure').catch(() => {});
   process.exitCode = 1;
 } finally {
-  await browser?.close();
+  await browser?.close().catch(() => {});
   server.kill();
-  await sleep(300);
-  await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  await sleep(500);
+  await fs.rm(tmp, { recursive: true, force: true, maxRetries: 5 }).catch(() => {});
 }

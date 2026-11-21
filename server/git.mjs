@@ -86,6 +86,23 @@ export async function mergeIntoMain(repo, mainBranch, branch, message) {
   }
 }
 
+/** Merges a branch into whatever is checked out in `dir` (a table's worktree). Returns { ok, conflict }. */
+export async function mergeInto(dir, branch, message) {
+  try {
+    await pexecFile('git', ['-c', 'user.name=Ship Shift', '-c', 'user.email=pass@ship-shift.local', 'merge', '--no-ff', '-m', message, branch], { cwd: dir, windowsHide: true });
+    return { ok: true };
+  } catch (e) {
+    await git(dir, ['merge', '--abort'], { allowFail: true });
+    return { ok: false, conflict: true, detail: (e.stdout || e.stderr || e.message || '').toString().slice(0, 2000) };
+  }
+}
+
+/** Every local branch whose name starts with one of the prefixes. */
+export async function branchesLike(repo, prefixes) {
+  const out = await git(repo, ['for-each-ref', '--format=%(refname:short)', ...prefixes.map(p => `refs/heads/${p}`)], { allowFail: true });
+  return (out || '').split('\n').map(s => s.trim()).filter(Boolean);
+}
+
 /** Runs the project's test command. The oven. */
 export async function runTests(dir, cmd) {
   const started = Date.now();

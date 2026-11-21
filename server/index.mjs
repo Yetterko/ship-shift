@@ -3,143 +3,70 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { Kitchen } from './kitchen.mjs';
+import { Restaurant, DEMO_TIMINGS, REAL_TIMINGS } from './restaurant.mjs';
 import { realDriver, simDriver } from './agents.mjs';
-import * as demoProject from './demo-repo.mjs';
+import { Budget } from './customers.mjs';
+import { ensureProjectRepo, CUSTOMERS, PROJECT_NAME } from './projects/roster-cafe.mjs';
 import { isRepo, currentBranch } from './git.mjs';
 import { Sessions, sessionIdFrom, sessionCookie, allow, scrubber } from './sessions.mjs';
 
-const { ensureDemoRepo, STARTER_ORDERS } = demoProject;
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
 const PORT = Number(process.env.PORT || 4610);
-// Public mode: every visitor gets a private demo kitchen of their own, and the chefs are always simulated. See mainPublic().
+const list = v => String(v || '').split(',').map(s => s.trim()).filter(Boolean);
+const num = (v, d) => (Number(v) > 0 ? Number(v) : d);
+
+// Public mode: every visitor gets a private restaurant of their own. See mainPublic().
 const PUBLIC = process.argv.includes('--public') || process.env.SHIP_PUBLIC === '1';
 const HOST = PUBLIC ? process.env.SHIP_HOST || '0.0.0.0' : '127.0.0.1';
-// Demo mode: simulated chefs, a fast clock, and a brand-new repo on every start so the same three minutes play out each time.
+// Demo mode: simulated chefs, the three minute shift, and a brand-new repo on every start.
 const DEMO = process.argv.includes('--demo') || process.env.SHIP_DEMO === '1';
 const SIM = PUBLIC || DEMO || process.env.SHIP_SIM === '1';
-const PACE = Number(process.env.SHIP_PACE) > 0 ? Number(process.env.SHIP_PACE) : DEMO || PUBLIC ? 8 : 1;
-const demoDir = path.resolve(process.env.SHIP_DEMO_DIR || path.join(root, '.kitchen', 'demo'));
-const DEMO_MARK = '.ship-shift-demo';
-const repoArg = DEMO ? null : process.env.SHIP_REPO;
-const repo = DEMO ? path.join(demoDir, 'repo') : path.resolve(repoArg || path.join(root, 'demo-repo'));
-const dataDir = DEMO ? path.join(demoDir, 'data') : path.resolve(process.env.SHIP_DATA || path.join(root, '.kitchen', path.basename(repo)));
-// When the demo's starter orders walk up, in seconds at the demo's pace of 8. Another pace stretches or squeezes them.
-// The example project's own schedule wins when it exports one.
-const DEMO_PACE = 8, DEMO_ARRIVALS_S = demoProject.DEMO_ARRIVALS_S || demoProject.ARRIVALS_S || [0, 10, 25, 45];
 
-const CHEFS = [
-  { id: 'pixel', name: 'Pixel', style: 'You care about clear names and small, readable diffs.' },
-  { id: 'router', name: 'Router', style: 'You care about edge cases and input validation.' },
-  { id: 'query', name: 'Query', style: 'You care about correct data handling and thorough tests.' },
-  { id: 'stack', name: 'Stack', style: 'You care about simple designs and adding as few dependencies as you can.' },
+// Every agent runs on Claude Haiku unless the team says otherwise.
+const MODEL = process.env.SHIP_MODEL || 'claude-haiku-5-5';
+const CUSTOMER_MODEL = process.env.SHIP_CUSTOMER_MODEL || 'claude-haiku-5-5';
+// The team's key. Not an ANTHROPIC_ name: public mode strips those from the environment so nothing it spawns inherits them.
+const SHARED_KEY = process.env.SHIP_SHARED_KEY || (!PUBLIC ? process.env.ANTHROPIC_API_KEY : '') || null;
+const SHARED_CHEFS = ['all', 'vip', 'off'].includes(process.env.SHIP_SHARED_CHEFS) ? process.env.SHIP_SHARED_CHEFS : 'vip';
+const VIP_CODE = process.env.SHIP_VIP_CODE || null;
+const OWNER_TOKEN = process.env.SHIP_OWNER_TOKEN || null;
+const REAL_OFF = process.env.SHIP_REAL === 'off';
+
+const budget = new Budget({
+  capUsd: num(process.env.SHIP_SPEND_CAP_USD, 40),
+  reviewsPerSession: num(process.env.SHIP_SESSION_REVIEWS, 20),
+  reviewUsdPerSession: num(process.env.SHIP_SESSION_REVIEW_USD, 0.5),
+  chefItemsPerSession: num(process.env.SHIP_SESSION_CHEF_ITEMS, 6),
+  chefUsdPerSession: num(process.env.SHIP_SESSION_CHEF_USD, 1.5),
+  maxRealRuns: num(process.env.SHIP_MAX_REAL_RUNS, 3),
+});
+
+const CHEF_DEFS = [
+  { id: 'pixel', name: 'Pixel', color: '#4aa3d8' },
+  { id: 'query', name: 'Query', color: '#57b86a' },
+  { id: 'router', name: 'Router', color: '#f2b23a' },
+  { id: 'stack', name: 'Stack', color: '#c873d6' },
 ];
+const CHEF_COUNT = Math.max(1, Math.min(4, num(process.env.SHIP_CHEFS, 2)));
+const TABLES = Math.max(1, Math.min(4, num(process.env.SHIP_TABLES, 2)));
+const crew = driver => CHEF_DEFS.slice(0, CHEF_COUNT).map(c => ({ ...c, model: MODEL, driver }));
+const timingsFor = demo => (demo || process.env.SHIP_TIMINGS === 'demo' ? DEMO_TIMINGS : REAL_TIMINGS);
 
-const list = v => String(v || '').split(',').map(s => s.trim()).filter(Boolean);
-const knownChef = id => { if (!CHEFS.some(c => c.id === id)) throw new Error(`No chef called "${id}". The chefs are ${CHEFS.map(c => c.id).join(', ')}.`); return id; };
-
-/** Each chef's driver and model: SHIP_REAL_CHEFS names the chefs that are real agents, and the rest are simulated. */
-function staff() {
-  // A public kitchen never reads SHIP_REAL_CHEFS or SHIP_CHEF_MODELS: a real chef would run code with the owner's Claude credentials.
-  if (PUBLIC) return { driver: simDriver, chefs: CHEFS.map(c => ({ ...c, driver: simDriver })) };
-  const real = list(process.env.SHIP_REAL_CHEFS).map(knownChef);
-  const models = Object.fromEntries(list(process.env.SHIP_CHEF_MODELS).map(pair => {
-    const [id, model] = pair.split('=').map(s => s.trim());
-    if (!model) throw new Error(`SHIP_CHEF_MODELS needs chef=model pairs, got "${pair}"`);
-    return [knownChef(id), model];
-  }));
-  const everyone = real.length ? null : SIM ? simDriver : realDriver;
-  return {
-    // Plans come from the kitchen's own driver. It is simulated whenever any chef is, so a mixed kitchen only spends where you asked it to.
-    driver: SIM || real.length ? simDriver : realDriver,
-    chefs: CHEFS.map(c => ({ ...c, model: models[c.id], driver: everyone || (real.includes(c.id) ? realDriver : simDriver) })),
-  };
-}
-
-/** The demo's customers walk up to the window on schedule. Returns the timers still pending. */
-function seatCustomers(kitchen) {
-  return STARTER_ORDERS.flatMap((o, i) => {
-    const ms = (DEMO_ARRIVALS_S[i] ?? DEMO_ARRIVALS_S.at(-1)) * 1000 * DEMO_PACE / PACE;
-    if (ms === 0) { kitchen.addOrder(o); return []; }
-    return [setTimeout(() => kitchen.addOrder(o), ms)];
-  });
-}
-
-/** Clears the last demo. Only ever deletes a directory this function created and marked. */
-async function freshDemoDir() {
-  const exists = await fs.stat(demoDir).then(() => true, () => false);
+/** Clears a directory this server made and marked, then makes it again. Never touches one it did not make. */
+async function freshDir(dir, mark) {
+  const exists = await fs.stat(dir).then(() => true, () => false);
   if (exists) {
-    const ours = await fs.stat(path.join(demoDir, DEMO_MARK)).then(() => true, () => false);
-    const empty = !ours && (await fs.readdir(demoDir)).length === 0;
-    if (!ours && !empty) throw new Error(`${demoDir} was not made by the demo, so it will not be cleared. Point SHIP_DEMO_DIR at an empty or new directory.`);
-    await fs.rm(demoDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 150 });
+    const ours = await fs.stat(path.join(dir, mark)).then(() => true, () => false);
+    const empty = !ours && (await fs.readdir(dir)).length === 0;
+    if (!ours && !empty) throw new Error(`${dir} was not made by Ship Shift, so it will not be cleared. Point SHIP_DATA at an empty or new directory.`);
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 150 });
   }
-  await fs.mkdir(demoDir, { recursive: true });
-  await fs.writeFile(path.join(demoDir, DEMO_MARK), 'Ship Shift demo. This directory is deleted and rebuilt on every `npm run demo`.\n');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, mark), 'Ship Shift. This directory is deleted and rebuilt on every start.\n');
 }
 
-async function main() {
-  let seeded = false;
-  const crew = staff();
-  if (DEMO) await freshDemoDir();
-  if (!repoArg) seeded = await ensureDemoRepo(repo);
-  if (!(await isRepo(repo))) throw new Error(`${repo} is not a git repository. Set SHIP_REPO to a git checkout.`);
-  const mainBranch = process.env.SHIP_MAIN || await currentBranch(repo);
-
-  const kitchen = new Kitchen({
-    repo, dataDir, mainBranch,
-    driver: crew.driver,
-    testCmd: process.env.SHIP_TEST_CMD || 'npm test',
-    model: process.env.SHIP_MODEL || 'claude-opus-5-5',
-    chefs: crew.chefs,
-    pace: PACE,
-    ...(DEMO ? { focusMin: 3, breakMin: 1 } : {}),
-  });
-  await kitchen.init();
-  if (DEMO) {
-    // The customers walk up once somebody is watching: the clock starts at the first page load, not at server start.
-    let open = false;
-    firstContact = () => {
-      if (open) return;
-      open = true;
-      seatCustomers(kitchen);
-    };
-  } else if (seeded || (!repoArg && kitchen.orders.length === 0)) {
-    for (const o of STARTER_ORDERS) kitchen.addOrder(o);
-  }
-
-  const server = http.createServer((req, res) => handle(kitchen, req, res).catch(e => send(res, 500, { error: e.message })));
-  const wss = new WebSocketServer({ server, path: '/ws' });
-  const broadcast = () => {
-    const msg = JSON.stringify({ type: 'state', state: kitchen.snapshot() });
-    for (const c of wss.clients) if (c.readyState === 1) c.send(msg);
-  };
-  let pending = null;
-  kitchen.on('change', () => { if (!pending) pending = setTimeout(() => { pending = null; broadcast(); }, 120); });
-  wss.on('connection', (ws, req) => {
-    if (!sameOrigin(req)) return ws.close(1008, 'Wrong origin');
-    firstContact();
-    ws.send(JSON.stringify({ type: 'state', state: kitchen.snapshot() }));
-  });
-
-  server.listen(PORT, HOST, () => {
-    console.log(`Ship Shift kitchen open at http://${HOST}:${PORT}`);
-    console.log(`  repo:   ${repo} (${mainBranch})`);
-    const real = kitchen.chefs.filter(c => c.driver === realDriver), sim = kitchen.chefs.filter(c => c.driver !== realDriver);
-    if (real.length) console.log(`  chefs:  Claude Agent SDK: ${real.map(c => `${c.name} (${c.model})`).join(', ')}`);
-    if (sim.length) console.log(`  chefs:  simulated, free: ${sim.map(c => c.name).join(', ')}`);
-    if (PACE !== 1) console.log(`  pace:   ${PACE}x (ticket targets and blocked-chef timers run ${PACE} times faster)`);
-    if (DEMO) console.log('  demo:   a fresh repo each start; orders walk up once the page opens; start the 3 minute shift when you are ready');
-  });
-}
-
-let firstContact = () => {};
-
-function sameOrigin(req) {
-  const o = req.headers.origin;
-  return !o || o === `http://${HOST}:${PORT}` || o === `http://localhost:${PORT}`;
-}
+/* ---------- HTTP helpers ---------- */
 
 function send(res, code, body) {
   res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
@@ -162,6 +89,7 @@ const THREE = path.join(root, 'node_modules', 'three');
 const STATIC = [['/vendor/addons/', path.join(THREE, 'examples', 'jsm')], ['/vendor/', path.join(THREE, 'build')], ['/', path.join(root, 'public')]];
 
 async function serveStatic(p, res, cache = 'no-store') {
+  if (p === '/watch' || p === '/watch/') p = '/index.html';
   const [prefix, base] = STATIC.find(([pre]) => p.startsWith(pre));
   let rel;
   try { rel = decodeURIComponent(p.slice(prefix.length)) || 'index.html'; } catch { return send(res, 404, { error: 'Not found' }); }
@@ -169,60 +97,126 @@ async function serveStatic(p, res, cache = 'no-store') {
   if (!file.startsWith(base + path.sep)) return send(res, 404, { error: 'Not found' });
   try {
     const data = await fs.readFile(file);
-    res.writeHead(200, { 'content-type': TYPES[path.extname(file)] || 'application/octet-stream', 'cache-control': cache });
+    const headers = { 'content-type': TYPES[path.extname(file)] || 'application/octet-stream', 'cache-control': cache };
+    if (path.basename(file) === 'sw.js') headers['service-worker-allowed'] = '/';
+    res.writeHead(200, headers);
     return res.end(data);
   } catch { return send(res, 404, { error: 'Not found' }); }
 }
 
-/** How the one kitchen on this machine answers. A public session passes its own: see sessionContext(). */
-const LOCAL = { open: () => firstContact(), sameOrigin, send, body, check: null };
-
-async function handle(k, req, res, ctx = LOCAL) {
-  const { send, sameOrigin } = ctx;
-  const url = new URL(req.url, `http://${HOST}`);
+/**
+ * The restaurant API, shared by every mode. ctx carries the mode's own rules:
+ * send, body, sameOrigin, check (extra limits), session hooks for keys, readOnly, and a leaderboard.
+ */
+async function handle(r, req, res, ctx) {
+  const { send } = ctx;
+  const url = new URL(req.url, 'http://kitchen');
   const p = url.pathname;
-
   if (!p.startsWith('/api/')) return serveStatic(p, res);
 
-  if (req.method === 'GET' && p === '/api/state') { ctx.open(); return send(res, 200, k.snapshot()); }
   let m;
-  if (req.method === 'GET' && (m = p.match(/^\/api\/orders\/(\d+)\/diff$/))) return send(res, 200, await k.diff(m[1]));
-  if (req.method === 'GET' && (m = p.match(/^\/api\/orders\/(\d+)\/wip$/))) return send(res, 200, await k.wip(m[1]));
-
+  if (req.method === 'GET') {
+    if (p === '/api/state') { ctx.open?.(); return send(res, 200, r.snapshot()); }
+    if (p === '/api/leaderboard') return send(res, 200, ctx.leaderboard ? ctx.leaderboard() : []);
+    if ((m = p.match(/^\/api\/items\/(\d+)\/diff$/))) return send(res, 200, await r.diff(m[1]));
+    if ((m = p.match(/^\/api\/items\/(\d+)\/wip$/))) return send(res, 200, await r.wip(m[1]));
+    return send(res, 404, { error: 'Not found' });
+  }
   if (req.method !== 'POST') return send(res, 405, { error: 'Method not allowed' });
-  if (!sameOrigin(req) || !(req.headers['content-type'] || '').includes('application/json')) return send(res, 403, { error: 'Requests must come from the kitchen page' });
+  if (!ctx.sameOrigin(req) || !(req.headers['content-type'] || '').includes('application/json')) return send(res, 403, { error: 'Requests must come from the restaurant page' });
+  if (ctx.readOnly) return send(res, 403, { error: 'You are watching this restaurant. Open your own to play.' });
   const b = await ctx.body(req);
   const refused = ctx.check?.(p, b);
   if (refused) return send(res, refused.code, { error: refused.error });
   try {
-    if (p === '/api/orders') return send(res, 200, k.addOrder(b));
-    if ((m = p.match(/^\/api\/orders\/(\d+)\/plan$/))) { k.planOrder(m[1]).catch(e => console.error(e)); return send(res, 202, { ok: true }); }
-    if ((m = p.match(/^\/api\/orders\/(\d+)\/assign$/))) { await k.assign(m[1], b.chefId); return send(res, 202, { ok: true }); }
-    if ((m = p.match(/^\/api\/orders\/(\d+)\/review$/))) { await k.review(m[1], b); return send(res, 200, { ok: true }); }
-    if ((m = p.match(/^\/api\/orders\/(\d+)\/ship$/))) return send(res, 200, { ok: true, ...(await k.ship(m[1], b)) });
-    if ((m = p.match(/^\/api\/orders\/(\d+)\/steer$/))) { await k.steer(m[1], b.note); return send(res, 202, { ok: true }); }
-    if (p === '/api/grants') { k.grant(b.cls, b.orderId); return send(res, 200, { ok: true, grants: [...k.grants] }); }
-    if (p === '/api/rules') { k.setRules(b); return send(res, 200, { ok: true, rules: k.rules }); }
-    if ((m = p.match(/^\/api\/orders\/(\d+)\/resume$/))) { await k.resume(m[1]); return send(res, 202, { ok: true }); }
-    if ((m = p.match(/^\/api\/orders\/(\d+)\/bin$/))) { await k.bin(m[1]); return send(res, 200, { ok: true }); }
-    if ((m = p.match(/^\/api\/questions\/([\w-]+)\/answer$/))) { k.answer(m[1], b); return send(res, 200, { ok: true }); }
-    if (p === '/api/shift/start') { k.startShift(b); return send(res, 200, { ok: true }); }
-    if (p === '/api/shift/stop') { k.stopShift(); return send(res, 200, { ok: true }); }
+    if (p === '/api/shift/start') { r.startShift(b); return send(res, 200, { ok: true }); }
+    if (p === '/api/shift/stop') { r.stopShift(); return send(res, 200, { ok: true }); }
+    if (p === '/api/break/start') { r.startBreak(); return send(res, 200, { ok: true }); }
+    if (p === '/api/break/end') { r.endBreak(); return send(res, 200, { ok: true }); }
+    if (p === '/api/customers') { const c = r.addCustomer(b); return send(res, 200, { ok: true, id: c.id }); }
+    if ((m = p.match(/^\/api\/customers\/(\d+)\/seat$/))) { await r.seat(m[1], b.tableId); return send(res, 200, { ok: true }); }
+    if ((m = p.match(/^\/api\/customers\/(\d+)\/items$/))) { const made = r.addItems(m[1], b.items); return send(res, 200, { ok: true, ids: made.map(i => i.id) }); }
+    if ((m = p.match(/^\/api\/customers\/(\d+)\/ack$/))) { r.ack(m[1]); return send(res, 200, { ok: true }); }
+    if ((m = p.match(/^\/api\/customers\/(\d+)\/bill$/))) return send(res, 200, { ok: true, ...(await r.bill(m[1], b)) });
+    if ((m = p.match(/^\/api\/items\/(\d+)\/edit$/))) { r.editItem(m[1], b); return send(res, 200, { ok: true }); }
+    if ((m = p.match(/^\/api\/items\/(\d+)\/remove$/))) { await r.bin(m[1]); return send(res, 200, { ok: true }); }
+    if ((m = p.match(/^\/api\/items\/(\d+)\/redo$/))) { r.redo(m[1], b); return send(res, 200, { ok: true }); }
+    if ((m = p.match(/^\/api\/items\/(\d+)\/serve$/))) return send(res, 200, { ok: true, ...(await r.serve(m[1], b)) });
+    if ((m = p.match(/^\/api\/items\/(\d+)\/resume$/))) { r.resume(m[1]); return send(res, 200, { ok: true }); }
+    if ((m = p.match(/^\/api\/items\/(\d+)\/bin$/))) { await r.bin(m[1]); return send(res, 200, { ok: true }); }
+    if ((m = p.match(/^\/api\/questions\/([\w-]+)\/answer$/))) { r.answer(m[1], b); return send(res, 200, { ok: true }); }
+    if (p === '/api/session/key') { if (!ctx.setKey) throw new Error('This kitchen already uses this machine\'s Claude credentials'); await ctx.setKey(b.apiKey); return send(res, 200, { ok: true }); }
+    if (p === '/api/session/key/clear') { ctx.clearKey?.(); return send(res, 200, { ok: true }); }
+    if (p === '/api/session/vip') { if (!ctx.setVip) throw new Error('No VIP codes here'); ctx.setVip(b.code); return send(res, 200, { ok: true }); }
   } catch (e) {
-    return send(res, 400, { error: e.message });
+    return send(res, e.status || 400, { error: e.message });
   }
   return send(res, 404, { error: 'Not found' });
 }
 
-/* ---------- public mode: a private demo kitchen per visitor ---------- */
+/** Turns a restaurant's changes into WebSocket state messages for a set of sockets, at most every 120 ms. */
+function broadcaster(r, sockets, scrub = s => s) {
+  let pending = null;
+  const flush = () => {
+    pending = null;
+    if (!sockets.size) return;
+    const msg = scrub(JSON.stringify({ type: 'state', state: r.snapshot() }));
+    for (const c of sockets) if (c.readyState === 1) c.send(msg);
+  };
+  r.on('change', () => { if (!pending) pending = setTimeout(flush, 120); });
+  // clocks and patience bars move without events, so send a heartbeat too
+  const beat = setInterval(() => { if (!pending) flush(); }, 1000);
+  beat.unref();
+  return () => { clearTimeout(pending); clearInterval(beat); };
+}
 
-const MAX_BODY = 16 * 1024;          // the largest request a visitor may send
-const ORDERS_PER_MIN = 6;            // new orders per kitchen per minute
-const OPEN_ORDERS = 12, ALL_ORDERS = 60;
-const REQUESTS_PER_MIN = 300;        // API calls per kitchen per minute
-const SOCKETS = 6;                   // open tabs per kitchen
+/* ---------- local mode: one restaurant on this machine ---------- */
 
-/** Reads a small JSON body. An oversized one is drained and refused, so the visitor gets an answer and not a dropped connection. */
+async function main() {
+  const repoArg = process.env.SHIP_REPO ? path.resolve(process.env.SHIP_REPO) : null;
+  const base = path.resolve(process.env.SHIP_DATA || path.join(root, '.kitchen', DEMO ? 'demo' : 'local'));
+  await freshDir(base, '.ship-shift-local');
+  const repo = repoArg || path.join(base, 'repo');
+  if (!repoArg) await ensureProjectRepo(repo);
+  if (!(await isRepo(repo))) throw new Error(`${repo} is not a git repository. Set SHIP_REPO to a git checkout.`);
+  const mainBranch = process.env.SHIP_MAIN || await currentBranch(repo);
+  const r = new Restaurant({
+    repo, dataDir: path.join(base, 'data'), mainBranch, testCmd: process.env.SHIP_TEST_CMD || 'npm test',
+    chefs: crew(SIM ? simDriver : realDriver), customers: repoArg ? [] : CUSTOMERS, tables: TABLES, timings: timingsFor(DEMO),
+    customerModel: CUSTOMER_MODEL, budget, publicMode: false, allowCustom: true, project: repoArg ? path.basename(repo) : PROJECT_NAME,
+    creds: () => ({ reviewKey: REAL_OFF ? null : SHARED_KEY, chefKey: undefined, ownKey: false, realChefs: !REAL_OFF }),
+  });
+  await r.init();
+
+  const ctx = {
+    send, body,
+    sameOrigin: req => { const o = req.headers.origin; return !o || o === `http://${HOST}:${PORT}` || o === `http://localhost:${PORT}`; },
+    leaderboard: () => [{ name: r.name, score: r.stats.score, bills: r.stats.bills, you: true }],
+  };
+  const server = http.createServer((req, res) => handle(r, req, res, ctx).catch(e => send(res, 500, { error: e.message })));
+  const wss = new WebSocketServer({ server, path: '/ws' });
+  const sockets = new Set();
+  broadcaster(r, sockets);
+  wss.on('connection', (ws, req) => {
+    if (!ctx.sameOrigin(req)) return ws.close(1008, 'Wrong origin');
+    sockets.add(ws); ws.on('close', () => sockets.delete(ws));
+    ws.send(JSON.stringify({ type: 'state', state: r.snapshot() }));
+  });
+  server.listen(PORT, HOST, () => {
+    console.log(`Ship Shift is open at http://${HOST}:${PORT}  (${r.name})`);
+    console.log(`  repo:      ${repo} (${mainBranch})`);
+    console.log(`  chefs:     ${SIM ? 'simulated, free' : `real Claude Agent SDK on ${MODEL}`} x${CHEF_COUNT}; ${TABLES} tables`);
+    console.log(`  customers: ${SHARED_KEY && !REAL_OFF ? `Claude reviews on ${CUSTOMER_MODEL}, capped at US$${budget.capUsd}` : 'scripted reviews (set SHIP_SHARED_KEY or ANTHROPIC_API_KEY for Claude)'}`);
+    console.log(`  timings:   ${timingsFor(DEMO) === DEMO_TIMINGS ? 'demo (3 minute shift)' : 'real (Pomodoro lengths)'}`);
+  });
+}
+
+/* ---------- public mode: a private restaurant per visitor ---------- */
+
+const MAX_BODY = 16 * 1024;
+const REQUESTS_PER_MIN = 300;
+const SOCKETS = 6;
+
 function smallBody(req) {
   return new Promise((resolve, reject) => {
     const tooLarge = () => Object.assign(new Error(`Requests are limited to ${MAX_BODY / 1024} KB`), { status: 413 });
@@ -238,10 +232,7 @@ function smallBody(req) {
   });
 }
 
-/**
- * Tidies everything a visitor typed before it reaches a kitchen: no control characters, bounded lengths, bounded nesting.
- * "git merge" is broken up because a simulated chef reads the branch to merge out of its prompt.
- */
+/** Tidies everything a visitor typed: no control characters, bounded lengths, bounded nesting. */
 function tidy(v, depth = 0) {
   if (typeof v === 'string') return v.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ' ').replace(/git\s+merge/gi, 'git-merge').slice(0, 4000);
   if (v === null || typeof v !== 'object') return v;
@@ -250,104 +241,164 @@ function tidy(v, depth = 0) {
   return Object.fromEntries(Object.entries(v).slice(0, 20).map(([k, x]) => [k.slice(0, 300), tidy(x, depth + 1)]));
 }
 
+const cookieValue = (req, name) => {
+  for (const part of String(req.headers.cookie || '').split(';')) { const i = part.indexOf('='); if (i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim(); }
+  return null;
+};
+
 async function mainPublic() {
-  // Nothing a public kitchen starts (test runs, git) inherits the owner's Claude credentials.
+  // Nothing a public restaurant starts (test runs, git, chefs) inherits the owner's Claude credentials.
   for (const key of Object.keys(process.env)) if (/^(ANTHROPIC_|CLAUDE_)/i.test(key)) delete process.env[key];
 
   const sessionsDir = path.resolve(process.env.SHIP_SESSIONS_DIR || path.join(root, '.kitchen', 'sessions'));
-  const max = Number(process.env.SHIP_MAX_SESSIONS) > 0 ? Math.floor(Number(process.env.SHIP_MAX_SESSIONS)) : 25;
-  const idleMin = Number(process.env.SHIP_IDLE_MIN) > 0 ? Number(process.env.SHIP_IDLE_MIN) : 20;
+  const max = Math.floor(num(process.env.SHIP_MAX_SESSIONS, 25));
+  const idleMin = num(process.env.SHIP_IDLE_MIN, 20);
   const origins = list(process.env.SHIP_PUBLIC_ORIGIN).map(o => o.replace(/\/+$/, ''));
   const scrub = scrubber(sessionsDir, root);
-  const crew = staff();
-
-  /** A request may come from the page it was served to: the Origin's host is the Host the visitor asked for, or SHIP_PUBLIC_ORIGIN. */
   const ownOrigin = req => {
     const o = req.headers.origin;
-    if (!o) return true;
-    if (origins.includes(o)) return true;
+    if (!o || origins.includes(o)) return true;
     try { return new URL(o).host === req.headers.host; } catch { return false; }
   };
-  const sendJson = (res, code, body) => {
+  const sendJson = (res, code, b) => {
     res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-    res.end(scrub(JSON.stringify(body)));
+    res.end(scrub(JSON.stringify(b)));
+  };
+
+  /** Which agents a visitor's restaurant may run for real, and on whose key. */
+  const credsFor = s => () => {
+    if (REAL_OFF) return { reviewKey: null, chefKey: null, ownKey: false, realChefs: false };
+    const own = s.apiKey || null;
+    const sharedChefs = !!SHARED_KEY && (SHARED_CHEFS === 'all' || (SHARED_CHEFS === 'vip' && s.vip));
+    return { reviewKey: own || SHARED_KEY, chefKey: own || (sharedChefs ? SHARED_KEY : null), ownKey: !!own, realChefs: !!own || sharedChefs, vip: !!s.vip };
+  };
+  const syncChefs = s => {
+    const real = credsFor(s)().realChefs;
+    for (const c of s.restaurant.chefs) c.driver = real ? realDriver : simDriver;
+    s.restaurant.allowCustom = real;
+    s.restaurant.changed();
   };
 
   const sessions = new Sessions({
     dir: sessionsDir, max, idleMs: idleMin * 60_000,
     build: async dir => {
       const repo = path.join(dir, 'repo');
-      await ensureDemoRepo(repo);
-      const kitchen = new Kitchen({
-        repo, dataDir: path.join(dir, 'data'), mainBranch: await currentBranch(repo),
-        driver: crew.driver, chefs: crew.chefs, testCmd: 'npm test', model: 'claude-opus-5-5',
-        pace: PACE, focusMin: 3, breakMin: 1,
+      await ensureProjectRepo(repo);
+      const holder = { apiKey: null, vip: false };
+      const r = new Restaurant({
+        repo, dataDir: path.join(dir, 'data'), mainBranch: await currentBranch(repo), testCmd: 'npm test',
+        chefs: crew(simDriver), customers: CUSTOMERS, tables: TABLES, timings: DEMO_TIMINGS, customerModel: CUSTOMER_MODEL,
+        budget, publicMode: true, allowCustom: false, project: PROJECT_NAME, creds: credsFor(holder),
       });
-      if (kitchen.driver !== simDriver || kitchen.chefs.some(c => c.driver !== simDriver)) throw new Error('A public kitchen may only have simulated chefs');
-      await kitchen.init();
-      let timers = [], open = false, pending = null;
-      const s = { kitchen, sockets: null };
-      kitchen.on('change', () => {
-        if (pending) return;
-        pending = setTimeout(() => {
-          pending = null;
-          if (!s.sockets?.size) return;
-          const msg = scrub(JSON.stringify({ type: 'state', state: kitchen.snapshot() }));
-          for (const c of s.sockets) if (c.readyState === 1) c.send(msg);
-        }, 120);
-      });
+      await r.init();
+      holder.restaurant = r;
+      const s = { restaurant: r, holder, sockets: null, stopCast: null };
       return {
-        kitchen,
-        watch: sockets => { s.sockets = sockets; },
-        // The customers walk up once the visitor is watching.
-        openDoors: () => { if (!open) { open = true; timers = seatCustomers(kitchen); } },
-        stop: async () => { timers.forEach(clearTimeout); clearTimeout(pending); await kitchen.close(); },
+        restaurant: r, holder,
+        watch: sockets => { if (!s.stopCast) { s.sockets = sockets; s.stopCast = broadcaster(r, sockets, scrub); } },
+        stop: async () => { s.stopCast?.(); holder.apiKey = null; await r.close(); },
       };
     },
   });
   await sessions.init();
 
-  /** How one visitor's kitchen answers: its own doors, the public origin rule, small bodies, and limits on new orders. */
+  // the team's flagship: real chefs on the team key, one persistent restaurant everyone can watch at /watch
+  let flagship = null;
+  if (OWNER_TOKEN) {
+    const dir = path.join(path.resolve(process.env.SHIP_FLAGSHIP_DIR || path.join(root, '.kitchen', 'flagship')));
+    await freshDir(dir, '.ship-shift-flagship');
+    const repo = path.join(dir, 'repo');
+    await ensureProjectRepo(repo);
+    const r = new Restaurant({
+      repo, dataDir: path.join(dir, 'data'), mainBranch: 'main', testCmd: 'npm test', chefs: crew(SHARED_KEY ? realDriver : simDriver),
+      customers: CUSTOMERS, tables: TABLES, timings: timingsFor(process.env.SHIP_FLAGSHIP_TIMINGS !== 'real'), customerModel: CUSTOMER_MODEL,
+      budget, publicMode: false, allowCustom: true, project: PROJECT_NAME, name: 'Team kitchen',
+      creds: () => ({ reviewKey: REAL_OFF ? null : SHARED_KEY, chefKey: SHARED_KEY, ownKey: false, realChefs: !REAL_OFF && !!SHARED_KEY }),
+    });
+    r.account.unlimited = true;
+    await r.init();
+    const sockets = new Set();
+    broadcaster(r, sockets, scrub);
+    flagship = { restaurant: r, sockets, requests: [] };
+  }
+
+  const leaderboard = mine => () => {
+    const all = [...sessions.live.values()].filter(s => s.restaurant).map(s => ({ name: s.restaurant.name, score: s.restaurant.stats.score, bills: s.restaurant.stats.bills, you: s.restaurant === mine }));
+    if (flagship) all.push({ name: flagship.restaurant.name, score: flagship.restaurant.stats.score, bills: flagship.restaurant.stats.bills, team: true, you: flagship.restaurant === mine });
+    return all.sort((a, b) => b.score - a.score).slice(0, 10);
+  };
+
   const sessionContext = s => ({
-    open: s.openDoors, sameOrigin: ownOrigin, send: sendJson, body: smallBody,
-    check: (p, b) => {
-      for (const [k, v] of Object.entries(b)) b[k] = tidy(v);
-      if (p !== '/api/orders') return null;
-      if (typeof b.title === 'string') b.title = b.title.replace(/\s+/g, ' ');
-      const orders = s.kitchen.orders;
-      if (orders.length >= ALL_ORDERS || orders.filter(o => !['shipped', 'binned'].includes(o.state)).length >= OPEN_ORDERS) return { code: 429, error: 'The rail is full. Ship or bin a ticket before you take another order.' };
-      if (!allow(s.orders, ORDERS_PER_MIN, 60_000)) return { code: 429, error: 'Too many new orders at once. Give the kitchen a minute.' };
-      return null;
+    send: sendJson, body: smallBody, sameOrigin: ownOrigin, leaderboard: leaderboard(s.restaurant),
+    check: (p, b) => { for (const [k, v] of Object.entries(b)) b[k] = tidy(v); return null; },
+    setKey: async key => {
+      key = String(key || '').trim();
+      if (!/^sk-ant-[\w-]{20,}$/.test(key)) throw new Error('That does not look like an Anthropic API key (sk-ant-…)');
+      const { default: Anthropic } = await import('@anthropic-ai/sdk');
+      try { await new Anthropic({ apiKey: key, maxRetries: 0, timeout: 10_000 }).models.retrieve(MODEL); }
+      catch (e) { throw new Error(e.status === 401 ? 'Anthropic did not accept that key' : `Could not check the key (${e.status || 'network'})`); }
+      s.holder.apiKey = key;
+      syncChefs(s.holder);
+    },
+    clearKey: () => { s.holder.apiKey = null; syncChefs(s.holder); },
+    setVip: code => {
+      if (!VIP_CODE || String(code || '').trim() !== VIP_CODE) throw new Error('That is not the VIP code');
+      s.holder.vip = true;
+      syncChefs(s.holder);
     },
   });
+  const ownerContext = {
+    send: sendJson, body: smallBody, sameOrigin: ownOrigin, check: (p, b) => { for (const [k, v] of Object.entries(b)) b[k] = tidy(v); return null; },
+    leaderboard: () => leaderboard(flagship?.restaurant)(),
+  };
+  const watchContext = { ...ownerContext, readOnly: true };
 
-  const FULL = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="20"><title>Ship Shift: the kitchen is full</title>
-<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#2b2233;color:#fff1dc;font:18px/1.5 system-ui,sans-serif;text-align:center}main{max-width:30rem;padding:2rem}h1{font-size:2rem;margin:0 0 .5rem}p{margin:.5rem 0;opacity:.9}a{color:#ffd27a}</style></head>
-<body><main><h1>The kitchen is full</h1><p>All ${max} kitchens are taken right now. Try again shortly.</p><p>This page tries again by itself every 20 seconds, or you can <a href="">try now</a>.</p></main></body></html>`;
+  const FULL = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="20"><title>Ship Shift: every table is taken</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#2b2233;color:#fff1dc;font:18px/1.5 system-ui,sans-serif;text-align:center}main{max-width:30rem;padding:2rem}h1{font-size:2rem;margin:0 0 .5rem}a{color:#ffd27a}</style></head>
+<body><main><h1>Every restaurant is open</h1><p>All ${max} restaurants are taken right now. ${OWNER_TOKEN ? 'You can <a href="/watch">watch the team kitchen</a> while you wait. ' : ''}This page tries again every 20 seconds.</p></main></body></html>`;
 
+  const isOwner = req => OWNER_TOKEN && cookieValue(req, 'ship_owner') === OWNER_TOKEN;
   const handlePublic = async (req, res) => {
-    let p;
-    try { p = new URL(req.url, 'http://kitchen').pathname; } catch { return sendJson(res, 400, { error: 'Bad request' }); }
-    if (p === '/healthz') return sendJson(res, 200, { ok: true, kitchens: sessions.size, max });
+    let url;
+    try { url = new URL(req.url, 'http://kitchen'); } catch { return sendJson(res, 400, { error: 'Bad request' }); }
+    const p = url.pathname;
+    if (p === '/healthz') return sendJson(res, 200, { ok: true, restaurants: sessions.size, max, spent: Math.round(budget.spent * 100) / 100, cap: budget.capUsd });
     const api = p.startsWith('/api/');
-    const page = !api && req.method === 'GET' && (p === '/' || p.endsWith('.html'));
-    // Scripts, styles, fonts and three.js are the same for everyone, so they need no kitchen.
+    let from = '';
+    try { from = new URL(req.headers.referer || 'http://x/').pathname; } catch { /* none */ }
+    const watching = api ? (from === '/watch' || from === '/watch/' || url.searchParams.get('watch') === '1') : (p === '/watch' || p === '/watch/');
+    // the owner link: /?owner=<token> sets a cookie, and from then on this browser runs the flagship
+    if (OWNER_TOKEN && url.searchParams.get('owner') === OWNER_TOKEN && !api) {
+      res.writeHead(302, { location: '/', 'set-cookie': `ship_owner=${OWNER_TOKEN}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${String(req.headers['x-forwarded-proto'] || '').startsWith('https') ? '; Secure' : ''}` });
+      return res.end();
+    }
+    const page = !api && req.method === 'GET' && (p === '/' || p.endsWith('.html') || p === '/watch' || p === '/watch/');
     if (!api && !page) return serveStatic(p, res, p.startsWith('/vendor/') || p.startsWith('/fonts/') ? 'public, max-age=3600' : 'no-cache');
+
+    if (flagship && (isOwner(req) || watching)) {
+      if (page) return serveStatic(p, res, 'no-store');
+      if (!allow(flagship.requests, REQUESTS_PER_MIN * 4, 60_000)) return sendJson(res, 429, { error: 'Too many requests.' });
+      return handle(flagship.restaurant, req, res, isOwner(req) ? ownerContext : watchContext);
+    }
 
     let s = sessions.find(sessionIdFrom(req));
     if (!s && page) {
       s = sessions.open();
-      if (!s) {
-        res.writeHead(503, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'retry-after': '20' });
-        return res.end(FULL);
-      }
+      if (!s) { res.writeHead(503, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'retry-after': '20' }); return res.end(FULL); }
       res.setHeader('set-cookie', sessionCookie(s.id, String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https'));
     }
-    if (!s) return sendJson(res, 401, { error: 'This kitchen has closed. Reload the page for a fresh one.' });
+    if (!s) return sendJson(res, 401, { error: 'This restaurant has closed. Reload the page for a fresh one.' });
     await s.ready;
     if (page) return serveStatic(p, res, 'no-store');
+    if (p === '/api/session/reset' && req.method === 'POST') {
+      // "New restaurant": close this one for good and forget the cookie, so the next page load opens a fresh one
+      if (!ownOrigin(req)) return sendJson(res, 403, { error: 'Requests must come from the restaurant page' });
+      sessions.end(s).catch(() => {});
+      res.setHeader('set-cookie', 'ship_sid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+      return sendJson(res, 200, { ok: true });
+    }
     if (!allow(s.requests, REQUESTS_PER_MIN, 60_000)) return sendJson(res, 429, { error: 'Too many requests. Slow down a little.' });
-    return handle(s.kitchen, req, res, s.ctx ||= sessionContext(s));
+    return handle(s.restaurant, req, res, s.ctx ||= sessionContext(s));
   };
 
   const server = http.createServer((req, res) => handlePublic(req, res).catch(e => {
@@ -363,22 +414,28 @@ async function mainPublic() {
   server.on('upgrade', (req, socket, head) => {
     const refuse = (code, text) => { socket.end(`HTTP/1.1 ${code} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); };
     socket.on('error', () => {});
-    let p = '';
-    try { p = new URL(req.url, 'http://kitchen').pathname; } catch { /* refused below */ }
-    if (p !== '/ws') return refuse(404, 'Not Found');
+    let url = null;
+    try { url = new URL(req.url, 'http://kitchen'); } catch { /* refused below */ }
+    if (url?.pathname !== '/ws') return refuse(404, 'Not Found');
     if (!ownOrigin(req)) return refuse(403, 'Forbidden');
+    if (flagship && (isOwner(req) || url.searchParams.get('watch') === '1')) {
+      return wss.handleUpgrade(req, socket, head, ws => {
+        ws.on('error', () => {});
+        flagship.sockets.add(ws); ws.on('close', () => flagship.sockets.delete(ws));
+        ws.send(scrub(JSON.stringify({ type: 'state', state: flagship.restaurant.snapshot() })));
+      });
+    }
     const s = sessions.find(sessionIdFrom(req));
     if (!s) return refuse(401, 'Unauthorized');
     if (s.sockets.size >= SOCKETS) return refuse(429, 'Too Many Requests');
     wss.handleUpgrade(req, socket, head, async ws => {
       ws.on('error', () => {});
-      try { await s.ready; } catch { return ws.close(1011, 'Kitchen failed to open'); }
-      if (sessions.find(s.id) !== s) return ws.close(4001, 'Kitchen closed');
+      try { await s.ready; } catch { return ws.close(1011, 'Restaurant failed to open'); }
+      if (sessions.find(s.id) !== s) return ws.close(4001, 'Restaurant closed');
       s.sockets.add(ws);
       s.watch(s.sockets);
       ws.on('close', () => s.sockets.delete(ws));
-      s.openDoors();
-      if (ws.readyState === 1) ws.send(scrub(JSON.stringify({ type: 'state', state: s.kitchen.snapshot() })));
+      if (ws.readyState === 1) ws.send(scrub(JSON.stringify({ type: 'state', state: s.restaurant.snapshot() })));
     });
   });
 
@@ -389,18 +446,17 @@ async function mainPublic() {
     setTimeout(() => process.exit(0), 8000).unref();
     server.close();
     for (const c of wss.clients) c.terminate();
-    sessions.closeAll().finally(() => process.exit(0));
+    Promise.all([sessions.closeAll(), flagship?.restaurant.close()]).finally(() => process.exit(0));
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(PORT, HOST, resolve); });
-  console.log(`Ship Shift public kitchen open on http://${HOST}:${PORT} (this machine: http://localhost:${PORT})`);
-  console.log(`  each visitor gets a private kitchen with its own demo repo under ${sessionsDir}`);
-  console.log(`  kitchens: at most ${max} at once, closed and deleted after ${idleMin} idle minute${idleMin === 1 ? '' : 's'}`);
-  console.log(`  chefs:    simulated, free: ${crew.chefs.map(c => c.name).join(', ')}. Real agents are off in public mode, whatever the environment says`);
-  console.log(`  pace:     ${PACE}x; orders walk up once a visitor's page opens; the shift is 3 minutes`);
-  if (origins.length) console.log(`  origins:  the visitor's own Host, and ${origins.join(', ')}`);
+  console.log(`Ship Shift public restaurants open on http://${HOST}:${PORT} (this machine: http://localhost:${PORT})`);
+  console.log(`  each visitor gets a private restaurant with its own copy of roster-cafe; at most ${max} at once, closed after ${idleMin} idle minutes`);
+  console.log(`  chefs:     simulated${SHARED_KEY ? `; real (${MODEL}) with a visitor's own key${SHARED_CHEFS === 'all' ? ', or the team key for everyone' : SHARED_CHEFS === 'vip' && VIP_CODE ? ', or the team key with the VIP code' : ''}` : "; real with a visitor's own key"}`);
+  console.log(`  customers: ${SHARED_KEY && !REAL_OFF ? `Claude reviews on ${CUSTOMER_MODEL}` : 'scripted (set SHIP_SHARED_KEY for Claude)'}; spend cap US$${budget.capUsd} on the team key, ${budget.reviewsPerSession} reviews and ${budget.chefItemsPerSession} real chef items per restaurant`);
+  if (flagship) console.log(`  flagship:  "${flagship.restaurant.name}" with ${SHARED_KEY ? 'real' : 'simulated'} chefs; run it from /?owner=<SHIP_OWNER_TOKEN>, anyone can watch at /watch`);
 }
 
 (PUBLIC ? mainPublic() : main()).catch(e => { console.error(e.message); process.exit(1); });

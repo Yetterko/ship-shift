@@ -1,100 +1,104 @@
 # Ship Shift
 
-Ship Shift is a development environment for running several Claude coding agents at once, played as a top-down 3D kitchen. You are the head chef. You walk around the kitchen, take tickets from customers at the window, carry them to agent chefs, answer chefs when they get stuck, carry finished plates to the pass, review the real diff there, and ship it to main.
+*Your agents cook. You run the floor. You still get your break.*
 
-The agents are real Claude Agent SDK sessions, and each one works in its own git worktree of your repo. Every bubble, plate and score point comes from actual agent events, test runs and git merges.
+Ship Shift is a front end for running several Claude coding agents at once, played as a restaurant. You are the waiter (the expediter). Customers are AI reviewer agents who bring a ticket. Chefs are AI coding agents who cook one small item at a time at four work stations. You break orders into items, taste every dish before it goes out, and take a real break while the kitchen is busy. A bell calls you back once something is ready.
 
-Controls: walk with WASD or the arrow keys, press E to act and Q to put down what you're carrying. You can also click anything and your chef walks there. For a flat list of the same kitchen, open `/board.html`.
+The full project spec is in [docs/spec.md](docs/spec.md). `docs/plan.md` describes the earlier head-chef prototype; where they disagree, the spec wins.
 
-| In the kitchen | What it really is |
+| In the restaurant | What it really is |
 |---|---|
-| Ticket on the rail | A task, with a size (S/M/L) and a patience bar for how long it has waited |
-| Plan board ("Plan first") | A read-only agent pass that writes a plan before any code changes |
-| Chef station | An Agent SDK session in `kitchen/<id>-<slug>`, its own git worktree |
-| Live feed on a station | The agent's real tool calls: reads, edits, commands |
-| Red **?** bubble | The agent is blocked on you. It asked a question (`AskUserQuestion`), or wants to run something outside the safe policy |
-| Oven | The project's test command, run in the worktree when the agent finishes |
-| The pass | Code review: the real diff, the test output and the agent's summary |
-| Ship it | `git merge --no-ff` into main |
-| Send it back | Resumes the same agent session with your feedback |
-| Spoiled | Main moved on and the branch no longer merges. It goes back to the chef to merge main and fix the conflicts |
-| Shift | A pomodoro. During focus, questions and plates wait at the pass; the break is the rush |
+| Customer in the line | A ticket (shaped like a GitHub issue) plus a reviewer persona. Tap one to read the docket |
+| Seating a customer | Accepting the task: a `table/<id>-<slug>` branch and worktree cut from `main` |
+| Order pad | Splitting the ticket into station-scoped prompts. Each demo ticket has "specials" (preset prompts) |
+| Ticket rail | The work queue. Idle chefs take the oldest ticket whose station is free (one chef per station) |
+| Station (Backend, Frontend, Database, Integration) | A system prompt added to the chef's instructions |
+| Chef | A Claude Agent SDK session in its own worktree (`kitchen/<id>.<n>-<slug>`), or a scripted practice chef that makes the same real edits |
+| Plate on the counter | The chef's commit, test run (green or red lamp) and diff against the table branch |
+| Sampling the dish | Code review: the diff, hunk by hunk, with "seen" tracking. Serving unread is a blind serve |
+| Send back | Resumes the same agent session with your comment |
+| Serve | Merges the item into the table branch, with your note for the customer |
+| Customer eats | One Claude call (structured output) that reviews everything served against the ticket, or a scripted review |
+| The bill | Merges the table branch into `main`. The receipt prints the merge commit |
+| Patience | Drains only while you are the bottleneck, and never during a protected break |
+| Staff room and bell | The Pomodoro: break when every chef is busy, no bell during your cooldown, then the bell calls you back |
 
 ## Run it
 
 ```
 npm install
-npm run demo    # free: the three minute demo, with simulated chefs and a fast clock
-npm run sim     # free: simulated chefs at normal pace, on ./demo-repo
-npm start       # real Claude agents (Claude Agent SDK, claude-opus-5-5 by default)
+npm run demo      # free: practice chefs, scripted customers, the 3 minute demo shift, a fresh repo every start
+npm run sim       # free: practice chefs at Pomodoro timings
+npm start         # real Claude Agent SDK chefs (Claude Haiku) on this machine's Claude credentials
+npm run public    # one private restaurant per visitor, what the hosted link runs
+npm run share     # public mode on this laptop behind a Cloudflare quick tunnel, with a QR code
 ```
 
-Then open http://127.0.0.1:4610.
+Then open http://127.0.0.1:4610. Each visitor's restaurant is a fresh git copy of `examples/roster-cafe`, a small rostering and pay app for the fictional Little Wattle cafe. Five customers queue outside (CAFE-101 to CAFE-105), and each ticket fixes one of the app's planted TODOs: Sunday penalty rates, overnight closes, double bookings, Queensland public holidays and a payroll CSV. Run `git log --graph` in `.kitchen/demo/repo` after a demo to see what you shipped.
 
-`npm run demo` is the quickest way to see the whole loop. It builds a new repo in `.kitchen/demo/repo` on every start, so each run plays out the same way. Four customers walk up over the first 45 seconds after you open the page, and the three minute shift starts when you start it. When the shift ends, run `git log --graph` in `.kitchen/demo/repo` to see what you shipped.
+## Agents, models and caps
 
-The simulated chefs make real changes to the demo project. Weekly hours is a one-line fix with tests. Overtime gets the sum wrong the first time, so its tests really fail until you send it back or the oven lever re-fires it. CSV export rewrites the same lines of `src/pay.js` as Overtime, so whichever ships second is a real merge conflict, and the chef really runs `git merge main` to resolve it. CSV export also asks to run `npm install csv-stringify`, unless you granted installs first.
+Every agent runs on **Claude Haiku** (`claude-haiku-5-5`) unless you set `SHIP_MODEL` / `SHIP_CUSTOMER_MODEL`.
 
-`npm run sim` and `npm start` create `demo-repo/`, the same small shift-pay project, on the first run and put the four starter orders on the rail.
+| Mode | Chefs | Customers |
+|---|---|---|
+| `npm run demo` / `sim` | Practice (scripted, real edits, free) | Claude if `SHIP_SHARED_KEY` or `ANTHROPIC_API_KEY` is set, otherwise scripted |
+| `npm start` | Real Agent SDK chefs on this machine's credentials | Same as above |
+| Public, default | Practice | Claude on `SHIP_SHARED_KEY`, capped. Scripted without it |
+| Public, visitor's own key ("Hire real chefs") | Real chefs on their key | Claude on their key |
+| Public, VIP code | Real chefs on the team key (`SHIP_SHARED_CHEFS=vip`) | Claude on the team key |
+| Public, team kitchen (`/?owner=<token>`, watch at `/watch`) | Real chefs on the team key | Claude on the team key |
 
-To point the kitchen at your own repo: `SHIP_REPO=/path/to/repo SHIP_TEST_CMD="npm test" npm start`. The main checkout needs to be clean, because shipping merges into it.
+Spend is capped: one global cap on the team key, plus per-restaurant caps on reviews and real chef items. When a cap is hit, that work falls back to practice chefs or scripted customers, with a "practice mode" tag in the HUD. `SHIP_REAL=off` is the kill switch. A visitor's key lives in server memory for their restaurant only and is never written, logged or sent back. Public chefs cannot ask permission for anything: any command outside the safe list is denied, and that includes `node -e`.
 
 | Setting | Default | |
 |---|---|---|
-| `SHIP_REPO` | `./demo-repo` | Git repo the chefs work on. The demo ignores it |
-| `SHIP_MAIN` | the repo's current branch | Branch that plates merge into |
-| `SHIP_TEST_CMD` | `npm test` | The oven |
-| `SHIP_MODEL` | `claude-opus-5-5` | Model for every chef that has no model of its own |
-| `SHIP_CHEF_MODELS` | none | A model per chef, for example `pixel=claude-haiku-5-5,query=claude-opus-5-5` |
-| `SHIP_SIM` | off | `1` uses simulated chefs |
-| `SHIP_REAL_CHEFS` | none | Chef ids that are real agents while the rest are simulated, for example `query`. Works with the demo. Plans stay simulated |
-| `SHIP_PACE` | `1` (`8` in the demo) | Speeds up the game clock: ticket targets and the blocked-chef timers are divided by it |
-| `SHIP_SIM_SPEED` | `1` | Divides how long a simulated chef takes over each step |
-| `SHIP_SIM_ASK` | unset | Chance from 0 to 1 that a simulated chef asks each question. Unset, the starter orders always ask |
-| `SHIP_DEMO_DIR` | `.kitchen/demo` | Where the demo builds its repo. It is cleared on every demo start |
-| `PORT` | `4610` | Listens on 127.0.0.1 only |
-
-The chefs are `pixel`, `router`, `query` and `stack`. Real chefs use whatever Claude credentials the Agent SDK finds: `ANTHROPIC_API_KEY`, or your Claude Code login. Only real chefs cost money.
-
-## What a chef may do alone
-
-| Action | Without asking you |
-|---|---|
-| Read, search, glob | Allowed |
-| Edit or write files | Allowed inside its own worktree |
-| Shell commands | Only safe ones: tests, `node`, `git status`/`diff`/`log`/`add`/`commit`/`merge main`, `ls`, `cat` |
-| Anything else (installs, network, deleting files, push, paths outside the worktree) | Asks you, and the agent waits |
-
-Every second an agent waits is counted on the "Agents waiting on you" meter and in the shift report.
+| `SHIP_MODEL` | `claude-haiku-5-5` | Model for real chefs |
+| `SHIP_CUSTOMER_MODEL` | `claude-haiku-5-5` | Model for customer reviews |
+| `SHIP_SHARED_KEY` | none | The team's Anthropic key (a secret: never commit it). Locally, `ANTHROPIC_API_KEY` works too |
+| `SHIP_SPEND_CAP_USD` | `40` | Global cap on the team key |
+| `SHIP_SESSION_REVIEWS` / `SHIP_SESSION_REVIEW_USD` | `20` / `0.5` | Claude reviews per restaurant |
+| `SHIP_SESSION_CHEF_ITEMS` / `SHIP_SESSION_CHEF_USD` | `6` / `1.5` | Real chef items per restaurant |
+| `SHIP_MAX_REAL_RUNS` | `3` | Real chef processes at once, server wide |
+| `SHIP_SHARED_CHEFS` | `vip` | `vip`: real chefs on the team key need `SHIP_VIP_CODE`. `all`: everyone (see the key risk in the spec, 7.9). `off` |
+| `SHIP_VIP_CODE` | none | Code that unlocks team-key chefs in a public restaurant |
+| `SHIP_OWNER_TOKEN` | none | Turns on the team kitchen. `/?owner=<token>` runs it; `/watch` watches it read-only |
+| `SHIP_FLAGSHIP_TIMINGS` | demo | `real` gives the team kitchen Pomodoro timings |
+| `SHIP_REAL` | on | `off` makes every agent practice or scripted |
+| `SHIP_CHEFS` / `SHIP_TABLES` | `2` / `2` | Chefs and usable tables (up to 4) |
+| `SHIP_TIMINGS` | real (demo for `--demo` and public) | `demo` forces the 3 minute timings locally |
+| `SHIP_SIM_SPEED` | `1` | Divides how long practice chefs take |
+| `SHIP_MAX_SESSIONS` / `SHIP_IDLE_MIN` | `25` / `20` | Public restaurants at once, and idle minutes before one is deleted |
+| `SHIP_REPO` | none | Local only: run on your own repo, with an empty line and the "New customer" button |
+| `PORT` | `4610` | Local modes listen on 127.0.0.1; public mode on 0.0.0.0 |
 
 ## Scoring
 
 | Event | Points |
 |---|---|
-| Shipped | +100 per size point (S=1, M=2, L=3) |
-| Streak | The shipped points are multiplied by the streak, from ×1 up to ×2 |
-| Right first time (no send-backs, and you read the diff) | +50, and the streak grows by 0.25 |
-| Served within the ticket's target time (S 10, M 20, L 40 minutes, divided by the pace) | +25 |
-| Sent back | −10. Free when the plate had gone cold and only needs main merged in |
-| Spoiled by a merge conflict at the hatch | −20, and the streak resets |
-| Shipped with failing tests | −150 |
-| A chef kept waiting on you | −1 for every 10 s after the first 20 s, at most −30 per question. Both times are divided by the pace |
+| Bill paid | 100 × difficulty (S 1, M 2, L 3) × strictness (1, 1.25, 1.5), times the streak |
+| Tip | Up to half the bill, from satisfaction and patience left (zero if they got furious) |
+| Clean plate (read, tests pass, no redo) | +25, and the streak grows by 0.25 up to ×2 |
+| Blind serve / burnt dish served | −10 / −50, and the streak resets |
+| Kept waiting | −1 for every interval a customer waits on you after the grace period (capped per wait) |
+| Walked out of the line | −25 (they rejoin later) |
+| Proper break / forced break | +20 / −30 |
 
-Approving a plate at the pass does not merge it. The plate ships when you carry it to the hatch, so you choose the merge order. A plate that no longer merges into main goes cold: send it back and the chef merges main, or ship it anyway and take the conflict.
+The till report at the end of the shift gives 1 to 3 stars, one line of advice, your rhythm (breaks, time back after the bell, longest stretch, bills per hour) and the leaderboard.
 
-A blind ship is a plate you shipped without scrolling its diff. It still earns the shipped points, but no streak multiplier and no first-time bonus, and it resets the streak. So does any ship that was sent back first.
+## Host it
 
-Two things take questions off your plate. A grant (install, network or delete) pre-approves that kind of request for one order or for the rest of the shift. The oven lever re-fires a plate once when its tests fail, with no send-back penalty.
+The kickoff wants a link the judges open on their own phones, over mobile data.
 
-The shift report gives one to three stars. Two stars need at least one ship, no failing tests shipped and a positive score. Three stars also need three ships, no conflicts, no blind ships and at most 10 points lost to waiting chefs.
+- **Fly.io (recommended):** `fly launch --copy-config --ha=false` (Sydney, one machine kept warm), then `fly secrets set SHIP_SHARED_KEY=… SHIP_VIP_CODE=… SHIP_OWNER_TOKEN=…`, then `fly deploy`.
+- **Render:** `render.yaml`. The free plan sleeps, so wake it before the demo.
+- **Backup:** `npm run share` on a laptop. The link changes every run.
 
 ## Checks
 
 ```
-npm run check            # syntax of every script in server/, test/ and public/
-npm run smoke            # end to end with simulated chefs, about a minute
-npm run game             # headless run of the 3D kitchen: walk, carry, plan, answer, review, ship
-node test/ui.mjs [dir]   # headless run of the list view
+npm run check        # syntax of every script
+npm run smoke        # the restaurant end to end with practice chefs: loop, break and bell, redo, all five orders merge in any order
+npm run publictest   # public mode over HTTP: private restaurants, keys, VIP, watch, owner, reset
+npm run game         # headless tap-through at phone size (set SHIP_CHROME to a Chrome or Edge executable if Playwright's is missing)
 ```
-
-The smoke test costs nothing. It runs the four starter orders through real worktrees, test runs and merges: the failing Overtime run and its fix, the Overtime and CSV conflict predicted and then resolved, grants, call-outs, the oven lever, a blind ship, the waiting penalty and the demo's order arrivals.

@@ -2,9 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1c1420">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='18' r='12' fill='%23ffd75e' stroke='%233a241c' stroke-width='3'/%3E%3C/svg%3E">
 <title>Ship Shift</title>
 <link rel="stylesheet" href="/game.css">
+<link rel="stylesheet" href="/restaurant.css">
 <script type="importmap">{ "imports": { "three": "/vendor/three.module.js", "three/addons/": "/vendor/addons/" } }</script>
 </head>
 <body class="game">
@@ -15,77 +18,115 @@
 
   <header class="hud">
     <div class="brand">SHIP<span>SHIFT</span></div>
-    <button class="pill clock" id="clockBtn" type="button" title="Shift settings"><small id="shiftMode">Start a shift</small><b id="shiftClock">25:00</b></button>
-    <div class="pill score" id="scoreBox" title="Score and streak"><span class="star" data-icon="star"></span><b id="mScore">0</b><i id="mStreak">×1.0</i></div>
+    <button class="pill clock" id="clockBtn" type="button" title="Shift"><small id="phaseName">Closed</small><b id="shiftClock">3:00</b><span class="work"><i id="workBar"></i></span></button>
+    <button class="pill breakbtn" id="breakBtn" type="button" hidden><span data-icon="mug"></span><span class="bl">Take a break</span></button>
+    <div class="pill score" id="scoreBox" title="Score and streak"><span class="star" data-icon="star"></span><b id="mScore">0</b><i id="mStreak">×1</i></div>
     <div class="meters">
-      <span class="m" id="mBlockedBox" title="Time your chefs have spent waiting on you"><span data-icon="wait"></span><b id="mBlocked">0:00</b></span>
-      <span class="m" title="Shipped to main"><span data-icon="plate"></span><b id="mShipped">0</b></span>
-      <span class="m" title="Spend"><span data-icon="coin"></span><b id="mSpend">$0.00</b></span>
+      <span class="m" id="mWaitBox" title="Things waiting on you right now, and the total time customers have waited on you"><span data-icon="wait"></span><b id="mWait">0 · 0:00</b></span>
+      <span class="m" title="Bills paid: tables merged into main"><span data-icon="coin"></span><b id="mBills">0</b></span>
+      <span class="m hide-sm" title="Claude spend in this restaurant"><b id="mSpend">$0.00</b></span>
     </div>
     <div class="tools">
-      <button class="rb" id="newOrderBtn" type="button" title="New order" aria-label="New order" data-icon="plus"></button>
+      <button class="rb" id="newCustBtn" type="button" title="New customer: write your own ticket" aria-label="New customer" data-icon="plus" hidden></button>
+      <button class="rb" id="keyBtn" type="button" title="Hire real Claude chefs" aria-label="Hire real Claude chefs" data-icon="key" hidden></button>
+      <button class="rb" id="boardBtn" type="button" title="Leaderboard" aria-label="Leaderboard" data-icon="trophy"></button>
+      <a class="rb hide-sm" href="/board.html" target="_blank" rel="noopener" title="Pro view: the same restaurant as plain lists" aria-label="Pro view" data-icon="list"></a>
       <button class="rb" id="soundBtn" type="button" title="Sound" aria-label="Sound" aria-pressed="true" data-icon="sound"></button>
-      <a class="rb" href="/board.html" title="List view" aria-label="List view" data-icon="list"></a>
     </div>
   </header>
-  <div class="popover" id="shiftPop" hidden>
-    <label>Focus <input id="focusMin" type="number" min="1" max="90" value="25"> min</label>
-    <label>Break <input id="breakMin" type="number" min="1" max="30" value="5"> min</label>
-    <button class="btn" id="shiftBtn" type="button">Start shift</button>
-  </div>
+  <div class="modetag"><span id="modeTag"></span><span id="watchTag" class="watchtag" hidden>Watching the team kitchen · <a href="/">open your own restaurant</a></span></div>
 
-  <div class="card quiet" id="card">
-    <div id="cardBody"></div>
-    <form id="lineForm" hidden autocomplete="off"><input id="lineInput" maxlength="300" aria-label="One line"><kbd>Enter</kbd></form>
-  </div>
+  <div class="coach" id="coach" hidden></div>
 
-  <aside class="review" id="review" aria-label="Review at the pass">
-    <div class="review-head">
-      <div><small id="rEyebrow"></small><h2 id="rTitle"></h2></div>
-      <button class="rb" id="rClose" type="button" title="Close (Esc)" aria-label="Close">×</button>
-    </div>
-    <div class="review-meta" id="rMeta"></div>
-    <details id="rSummaryBox"><summary>Chef's summary</summary><pre id="rSummary" class="prose"></pre></details>
-    <details id="rTestsBox"><summary id="rTestsLabel">Tests</summary><pre id="rTests" class="out"></pre></details>
-    <div class="diff" id="rDiff" tabindex="-1"></div>
-    <div class="review-foot">
-      <div class="hints"><span class="k"><kbd>J</kbd><kbd>K</kbd>next / previous hunk</span><span class="seenpill" id="rSeen"></span></div>
-      <textarea id="rComment" rows="2" placeholder="B: write what to fix, then Enter sends it back"></textarea>
-      <div class="row">
-        <button class="btn ship" id="rApprove" type="button"><kbd>Enter</kbd> Approve</button>
-        <button class="btn danger" id="rBack" type="button">Send back</button>
-        <button class="btn ghost" id="rCold" type="button" hidden>Cold: send back to merge main</button>
-        <button class="btn ghost right" id="rBin" type="button">Bin the order</button>
-      </div>
-    </div>
+  <aside class="panel" id="panel" aria-live="polite">
+    <div class="pbody" id="pBody"></div>
   </aside>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>
 </div>
 
-<dialog id="orderDialog">
-  <form method="dialog" id="orderForm" class="dlg">
-    <h2>New order</h2>
-    <label>What needs doing <input id="oTitle" required maxlength="120" placeholder="Overtime pay for long shifts"></label>
-    <label>Details for the chef <textarea id="oBody" rows="5" placeholder="Acceptance criteria, files, edge cases"></textarea></label>
-    <fieldset class="sizes"><legend>Size</legend>
-      <label><input type="radio" name="oSize" value="S"> Small</label>
-      <label><input type="radio" name="oSize" value="M" checked> Medium</label>
-      <label><input type="radio" name="oSize" value="L"> Large</label>
+<!-- start screen -->
+<div class="overlay" id="start">
+  <div class="sheet paper">
+    <small class="kicker">Tonight at</small>
+    <h1 id="startName">The Hungry Wombat</h1>
+    <p class="tag">Your agents cook. You run the floor. You still get your break.</p>
+    <ol class="how">
+      <li><b>Seat a customer.</b> Each one is a ticket (like a GitHub issue) and an AI reviewer.</li>
+      <li><b>Break the order into items</b> for the Backend, Frontend, Database and Integration stations. Chefs (AI coding agents) pick them up.</li>
+      <li><b>Taste every dish</b> at the counter: the real diff and tests. Serve it, or send it back.</li>
+      <li><b>Take a break</b> while every chef is cooking. The bell calls you back when it's worth it.</li>
+    </ol>
+    <fieldset class="lens"><legend>Shift length</legend>
+      <label><input type="radio" name="len" value="3" checked> Demo · 3 min</label>
+      <label><input type="radio" name="len" value="25"> 25 min</label>
+      <label><input type="radio" name="len" value="50"> 50 min ×1.2</label>
+      <label><input type="radio" name="len" value="90"> 90 min ×1.4</label>
     </fieldset>
-    <div class="row"><button class="btn" value="ok" type="submit">Send in the customer</button><button class="btn ghost" value="cancel" type="button" id="orderCancel">Cancel</button></div>
+    <details class="adv"><summary>Break settings (for 25 minutes and up)</summary>
+      <label>No bell for the first <input id="cooldownIn" type="number" min="1" max="30" value="5"> min of a break</label>
+      <label>Forced break after <input id="maxWorkIn" type="number" min="5" max="90" value="50"> min of work</label>
+    </details>
+    <button class="btn ship big" id="startBtn" type="button">Open the restaurant</button>
+    <small class="modeline" id="startMode"></small>
+  </div>
+</div>
+
+<!-- staff room: the break, and the bell -->
+<div class="overlay staff" id="staff">
+  <div class="sheet">
+    <div class="mug" data-icon="mug"></div><div class="bellic" data-icon="bell"></div>
+    <h1 id="sTitle">Staff room</h1>
+    <div class="sclock" id="sTimer">0:00</div>
+    <div class="cool"><span class="ring" id="sCool"></span><span id="sCoolText"></span></div>
+    <p id="sMsg"></p>
+    <button class="btn ship big" id="backBtn" type="button">Back to work</button>
+  </div>
+</div>
+
+<!-- end of night -->
+<div class="overlay" id="till">
+  <div class="sheet zreport">
+    <small class="kicker">Z report · end of night</small>
+    <div class="stars" id="tStars"></div>
+    <div class="zscore"><b id="tScore">0</b> points</div>
+    <p class="advice" id="tAdvice"></p>
+    <div class="report" id="tStats"></div>
+    <p class="insight" id="tInsight"></p>
+    <div class="board" id="tBoard"></div>
+    <div class="row"><button class="btn ship big" id="tAgain" type="button">New restaurant</button><button class="btn ghost" id="tClose" type="button">Look around</button></div>
+  </div>
+</div>
+
+<dialog id="keyDlg">
+  <div class="dlg">
+    <h2>Hire real Claude chefs</h2>
+    <p>Practice chefs are scripted, but they make real edits, commits, tests and merges. With your own Anthropic API key, this restaurant's chefs become real Claude Agent SDK agents (Claude Haiku), and reviews use your key too.</p>
+    <label>Your API key <input id="keyIn" type="password" autocomplete="off" placeholder="sk-ant-…"></label>
+    <p class="fine">Kept in the server's memory for this restaurant only: never stored, never logged, never sent back. Forgotten when the restaurant closes. Capped at a few real dishes per restaurant.</p>
+    <div class="row"><button class="btn ship" id="keySave" type="button">Hire them</button><button class="btn ghost" id="keyClear" type="button">Back to practice chefs</button><button class="btn ghost right" id="keyCancel" type="button">Close</button></div>
+    <label>Team VIP code <input id="vipIn" autocomplete="off"></label>
+    <div class="row"><button class="btn" id="vipSave" type="button">Use the VIP code</button></div>
+    <p class="fine" id="keyMsg"></p>
+  </div>
+</dialog>
+
+<dialog id="custDlg">
+  <form method="dialog" id="custForm" class="dlg">
+    <h2>New customer</h2>
+    <label>The ticket <input id="cTitle" required maxlength="120" placeholder="Show each person's total hours on the roster page"></label>
+    <label>Details and acceptance criteria (one per line) <textarea id="cBody" rows="5" placeholder="- Totals appear in a new column&#10;- Tests cover an empty week"></textarea></label>
+    <fieldset class="sizes"><legend>Size</legend>
+      <label><input type="radio" name="cSize" value="S"> Small</label>
+      <label><input type="radio" name="cSize" value="M" checked> Medium</label>
+      <label><input type="radio" name="cSize" value="L"> Large</label>
+    </fieldset>
+    <div class="row"><button class="btn" type="submit">Join the line</button><button class="btn ghost" type="button" id="custCancel">Cancel</button></div>
   </form>
 </dialog>
 
-<dialog id="reportDialog">
-  <div class="dlg report-dlg">
-    <small>Shift over</small>
-    <h2 id="repTitle">Shift report</h2>
-    <div class="stars" id="repStars"></div>
-    <p class="advice" id="repAdvice"></p>
-    <div class="report" id="repBody"></div>
-    <div class="row"><button class="btn" id="repClose" type="button">Run the pass</button></div>
-  </div>
+<dialog id="lbDlg">
+  <div class="dlg"><h2>Leaderboard</h2><ol class="lb" id="lbList"></ol><div class="row"><button class="btn ghost" id="lbClose" type="button">Close</button></div></div>
 </dialog>
 
 <script src="/game.js" type="module"></script>

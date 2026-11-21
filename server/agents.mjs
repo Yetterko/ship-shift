@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { recipeFor, mergeMain } from './sim-scripts.mjs';
+import { recipeFor, mergeMain, genericRecipe } from './sim-scripts.mjs';
 
 /**
  * One chef = one agent run. Both drivers share this contract:
@@ -85,53 +85,74 @@ export function toolFile(name, input = {}, cwd = '') {
   return path.relative(cwd, path.resolve(cwd, String(p))).split(path.sep).join('/') || undefined;
 }
 
-/** Decides what a chef may do alone. Anything not decided here goes to the human. */
-function policy(toolName, input, cwd, readOnly) {
-  if (toolName === 'AskUserQuestion') return 'ask';
-  if (READ_TOOLS.has(toolName)) return inside(cwd, input.file_path || input.path) ? 'allow' : 'ask';
+/**
+ * Decides what a chef may do alone. Anything not decided here goes to the waiter, except in a public restaurant:
+ * there the visitor is not the owner of the machine, so anything outside the safe list is simply denied.
+ */
+function policy(toolName, input, cwd, readOnly, publicMode) {
+  const ask = publicMode ? { deny: 'Not allowed in a public kitchen. Use only the files in this directory and the safe commands (npm test, git status/diff/log).' } : 'ask';
+  if (toolName === 'AskUserQuestion') return publicMode ? { deny: 'Nobody can answer questions in a public kitchen. Make a sensible assumption, say what it was, and keep going.' } : 'ask';
+  if (READ_TOOLS.has(toolName)) {
+    if (publicMode && ['WebFetch', 'WebSearch'].includes(toolName)) return ask;
+    return inside(cwd, input.file_path || input.path) ? 'allow' : ask;
+  }
   if (WRITE_TOOLS.has(toolName)) {
     if (readOnly) return { deny: 'This is a planning pass. Do not change files; describe the plan instead.' };
-    return inside(cwd, input.file_path || input.notebook_path) ? 'allow' : 'ask';
+    return inside(cwd, input.file_path || input.notebook_path) ? 'allow' : ask;
   }
   if (SHELL_TOOLS.has(toolName)) {
     const cmd = String(input.command || '');
     if (readOnly && !/^\s*(git (status|log|diff|show)|ls|dir|cat|type)\b/i.test(cmd)) return { deny: 'This is a planning pass. Only read the code.' };
-    if (RISKY_SHELL.test(cmd) || SUBSHELL.test(cmd)) return 'ask';
+    if (RISKY_SHELL.test(cmd) || SUBSHELL.test(cmd)) return ask;
+    // a public chef may not run arbitrary node: `node -e` or a script it wrote could read the process environment
+    if (publicMode && /(^|[\s;&|])node\s+(?!--test\b)/i.test(cmd)) return ask;
     const parts = segments(cmd);
-    return parts.length && parts.every(part => SAFE_SHELL.test(part)) ? 'allow' : 'ask';
+    return parts.length && parts.every(part => SAFE_SHELL.test(part)) ? 'allow' : ask;
   }
-  return 'ask';
+  return ask;
 }
 
-const KITCHEN_RULES = `You are a chef in Ship Shift: a coding agent working one order (task) in your own git worktree, which is your current directory.
+const KITCHEN_RULES = `You are a chef in Ship Shift: a coding agent cooking one item of a customer's order, in your own git worktree, which is your current directory.
 - Stay inside this directory. Do not push, and do not touch other branches.
-- Make the change the order asks for, add or update tests, and run the project's tests before you finish.
-- If something about the order is genuinely ambiguous and you cannot pick a sensible default, use the AskUserQuestion tool once. Otherwise decide and keep going.
+- Make only the change this item asks for. Other chefs may be cooking other items of the same order on separate branches.
+- Add or update tests, and run the project's tests (npm test) before you finish.
+- If something is genuinely ambiguous and you cannot pick a sensible default, use the AskUserQuestion tool once. Otherwise decide and keep going.
 - Do not commit; the kitchen commits your work when you finish.
-- End with a short summary for the reviewer: what you changed, how you tested it, and anything they should look at closely.`;
+- End with a short summary for the waiter: what you changed, how you tested it, and anything they should look at closely.`;
+
+/** The environment a real chef's Claude Code process gets: the machine's own, minus every secret, plus one API key. */
+function chefEnv(apiKey) {
+  if (!apiKey) return undefined; // local mode: inherit this machine's own Claude credentials
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) if (!/^(SHIP_SHARED_KEY|SHIP_VIP_CODE|SHIP_OWNER_TOKEN|ANTHROPIC_|CLAUDE_)/i.test(k)) env[k] = v;
+  env.ANTHROPIC_API_KEY = apiKey;
+  return env;
+}
 
 export const realDriver = {
   name: 'claude',
-  async run({ cwd, prompt, resume, model, systemAppend, readOnly, signal, onEvent, askHuman }) {
+  /** apiKey: the key to use (a visitor's own, or the team's for VIP sessions); unset uses this machine's credentials. */
+  async run({ cwd, prompt, resume, model, systemAppend, readOnly, signal, onEvent, askHuman, apiKey, publicMode = false, maxTurns }) {
     const { query } = await import('@anthropic-ai/claude-agent-sdk');
     const abortController = new AbortController();
     signal?.addEventListener('abort', () => abortController.abort(), { once: true });
 
     const canUseTool = async (toolName, input) => {
-      const decision = policy(toolName, input, cwd, readOnly);
+      const decision = policy(toolName, input, cwd, readOnly, publicMode);
       if (decision === 'allow') return { behavior: 'allow', updatedInput: input };
       if (decision && decision.deny) return { behavior: 'deny', message: decision.deny };
       if (toolName === 'AskUserQuestion') {
         const reply = await askHuman({ kind: 'question', toolName, input, questions: input.questions || [] });
-        if (!reply.allow) return { behavior: 'deny', message: reply.message || 'The head chef skipped this question. Use your best judgement.' };
+        if (!reply.allow) return { behavior: 'deny', message: reply.message || 'The waiter skipped this question. Use your best judgement.' };
         return { behavior: 'allow', updatedInput: { ...input, answers: reply.answers || {} } };
       }
       const reply = await askHuman({ kind: 'permission', toolName, input, reason: summarizeTool(toolName, input, cwd) });
       return reply.allow
         ? { behavior: 'allow', updatedInput: input }
-        : { behavior: 'deny', message: reply.message || 'The head chef said no. Find another way.' };
+        : { behavior: 'deny', message: reply.message || 'The waiter said no. Find another way.' };
     };
 
+    const env = chefEnv(apiKey);
     const q = query({
       prompt,
       options: {
@@ -142,8 +163,9 @@ export const realDriver = {
         canUseTool,
         permissionMode: 'default',
         settingSources: [],
-        maxTurns: readOnly ? 25 : 80,
+        maxTurns: maxTurns || (readOnly ? 25 : 40),
         systemPrompt: { type: 'preset', preset: 'claude_code', append: [KITCHEN_RULES, systemAppend].filter(Boolean).join('\n\n'), snapshot: true },
+        ...(env ? { env } : {}),
       },
     });
 
@@ -178,8 +200,6 @@ export const realDriver = {
 
 /** What a run is being asked to do, read from the kitchen's own prompts. */
 function runKind(prompt, resume) {
-  const called = prompt.match(/The head chef called out: (.*)/);
-  if (called) return { kind: 'steer', note: called[1].trim() };
   const merge = prompt.match(/git merge ([^\s`]+)/);
   if (merge) return { kind: 'conflict', note: '', mainBranch: merge[1] };
   if (!resume) return { kind: 'first', note: '' };
@@ -187,38 +207,14 @@ function runKind(prompt, resume) {
   return { kind: 'feedback', note: fed ? fed[1].trim() : '' };
 }
 
-/** The generic chef, for any order that has no recipe: one real edit, sometimes a question. */
-const genericRecipe = {
-  async run(ctx) {
-    await ctx.step('Glob', 'looks for src/**/*.js');
-    await ctx.step('Read', 'reads src/pay.js', { file: 'src/pay.js' });
-    if (ctx.kind === 'conflict') await mergeMain(ctx);
-    if (ctx.kind === 'steer') ctx.say(`Heard you: "${ctx.note}".`);
-    if (ctx.kind === 'first' && ctx.wantsAsk()) {
-      const pick = await ctx.ask({ question: 'Should rounding happen per shift or on the weekly total?', header: 'Rounding', options: [{ label: 'Per shift', description: 'Round each shift to cents' }, { label: 'Weekly total', description: 'Round once at the end' }] });
-      ctx.say(pick ? `Going with: ${pick}` : 'No answer, using my best judgement.');
-    }
-    const file = 'src/kitchen-notes.js';
-    const line = `// ${ctx.kind === 'first' ? 'Change' : 'Revision'} for: ${ctx.title.slice(0, 80)}\nexport const touched${Date.now()} = true;\n`;
-    await ctx.edit(file, ((await ctx.read(file)) || '') + line, `edits ${file}`);
-    if (ctx.kind !== 'steer' && Math.random() < Math.min(0.3, ctx.askChance)) {
-      const allowed = await ctx.permit('npm install csv-stringify');
-      ctx.say(allowed ? 'Allowed, but the change did not need it after all.' : 'Skipped the dependency and wrote it by hand.');
-    }
-    await ctx.step('Bash', 'runs npm test', { ms: 1400 });
-    return `${ctx.kind === 'first' ? 'Made the change.' : 'Addressed your feedback.'} Simulated chef: edited ${file} and ran npm test.`;
-  },
-};
-
 /**
- * A free, offline stand-in that makes real file changes so the whole loop can be demoed and tested.
- * Starter orders in the demo repo follow a recipe from sim-scripts.mjs; anything else gets the generic chef.
- * SHIP_SIM_SPEED divides every wait. SHIP_SIM_ASK is the chance of each question or permission request;
- * when it is unset a recipe always asks and the generic chef asks half the time.
+ * A free, offline stand-in that makes real file changes so the whole loop can be played, demoed and tested.
+ * Items made from a roster-cafe special follow its recipe in sim-scripts.mjs; anything else gets the generic chef.
+ * SHIP_SIM_SPEED divides every wait.
  */
 export const simDriver = {
   name: 'sim',
-  async run({ cwd, prompt, resume, readOnly, signal, onEvent, askHuman, order }) {
+  async run({ cwd, prompt, resume, signal, onEvent, order }) {
     const wait = ms => new Promise((res, rej) => {
       if (signal?.aborted) return rej(new Error('Stopped'));
       const stop = () => { clearTimeout(t); rej(new Error('Stopped')); };
@@ -229,12 +225,12 @@ export const simDriver = {
     const sessionId = resume || 'sim-' + Math.random().toString(36).slice(2, 10);
     onEvent({ kind: 'session', sessionId });
     const speed = Number(process.env.SHIP_SIM_SPEED) > 0 ? Number(process.env.SHIP_SIM_SPEED) : 1;
-    const title = order?.title || (prompt.match(/^Order #\d+ \(\w\): (.*)$/m) || [])[1] || prompt.split('\n').find(l => l.trim()) || 'order';
     const abs = rel => path.join(cwd, ...rel.split('/'));
+    const est = (Number(order?.estMs) || 12000) / speed;
     const ctx = {
-      cwd, prompt, title, mainBranch: 'main', ...runKind(prompt, resume),
-      askChance: 1,
-      step: async (tool, text, { file, ms = 900 } = {}) => { stopIfAborted(); onEvent({ kind: 'tool', tool, text, file }); await wait(ms / speed); },
+      cwd, prompt, title: order?.title || 'item', itemKey: order?.itemKey, ask: order?.ask, ...runKind(prompt, resume),
+      est: resume ? est * 0.6 : est,
+      step: async (tool, text, { file, ms = 900 } = {}) => { stopIfAborted(); onEvent({ kind: 'tool', tool, text, file }); await wait(ms); },
       say: text => { if (text) onEvent({ kind: 'text', text }); },
       read: rel => fs.readFile(abs(rel), 'utf8').then(t => t.replace(/\r\n/g, '\n'), () => null),
       edit: async (rel, text, why, ms = 900, tool = 'Edit') => {
@@ -242,28 +238,13 @@ export const simDriver = {
         onEvent({ kind: 'tool', tool, text: why, file: rel });
         await fs.mkdir(path.dirname(abs(rel)), { recursive: true });
         await fs.writeFile(abs(rel), text);
-        await wait(ms / speed);
+        await wait(ms);
       },
-      wantsAsk: () => Math.random() < ctx.askChance,
-      ask: async question => {
-        const reply = await askHuman({ kind: 'question', toolName: 'AskUserQuestion', questions: [question] });
-        return reply.allow ? Object.values(reply.answers || {})[0] || reply.message || null : null;
-      },
-      permit: async command => (await askHuman({ kind: 'permission', toolName: 'Bash', input: { command }, reason: `runs ${command}` })).allow,
     };
     try {
-      let recipe = recipeFor(title);
-      if (recipe && !(await recipe.applies(ctx))) recipe = null;
-      const asked = process.env.SHIP_SIM_ASK;
-      ctx.askChance = asked !== undefined && asked !== '' ? Number(asked) : recipe ? 1 : 0.5;
-      if (readOnly) {
-        const file = recipe?.planFile || 'src/pay.js';
-        await ctx.step('Glob', 'looks for src/**/*.js');
-        await ctx.step('Read', `reads ${file}`, { file });
-        await ctx.step('Grep', 'searches for shiftHours');
-        return { sessionId, summary: recipe?.plan || `Plan:\n1. Find where the order touches the code.\n2. Change the smallest function that does it.\n3. Add a test per case named in the order.\n4. Run npm test.`, costUsd: 0, turns: 3, isError: false };
-      }
-      const summary = await (recipe || genericRecipe).run(ctx);
+      if (ctx.kind === 'conflict') await mergeMain(ctx);
+      const recipe = recipeFor(order?.presetId) || genericRecipe;
+      const summary = await recipe.run(ctx);
       return { sessionId, summary, costUsd: 0, turns: 6, isError: false };
     } catch (e) {
       return { sessionId, summary: '', costUsd: 0, turns: 0, isError: true, error: e.message };
