@@ -17,14 +17,16 @@ const params = new URLSearchParams(location.search);
 // A phone starts one rung down the ladder (smaller shadow map): its screen is small and its GPU is not a laptop's.
 export const mobile = matchMedia('(pointer: coarse)').matches || /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
 const MAX_PIXEL_RATIO = mobile ? 1.25 : 1.5;
-export const quality = { pr: Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO), level: mobile ? 1 : 0, outline: true, fps: 60, lost: false, mobile, fixed: params.get('quality') === 'high' };
+// A phone starts at 1.0 and earns its way up to 1.25 when it has headroom, so the first seconds are never the slow ones.
+const START_PIXEL_RATIO = mobile ? 1 : MAX_PIXEL_RATIO;
+export const quality = { pr: Math.min(window.devicePixelRatio || 1, START_PIXEL_RATIO), level: mobile ? 1 : 0, outline: true, fps: 60, lost: false, mobile, fixed: params.get('quality') === 'high' };
 if (params.get('ol') === '0') quality.outline = false;
 if (params.get('pr')) quality.pr = Number(params.get('pr'));
 if (params.get('quality') === 'low') { quality.pr = 1; quality.level = 2; quality.outline = false; quality.fixed = true; }
 export const renderer = new THREE.WebGLRenderer({ antialias: params.get('aa') === '1', powerPreference: 'high-performance' });
 renderer.setPixelRatio(quality.pr);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = params.get('sh') === 'pcf' ? THREE.PCFShadowMap : params.get('sh') === 'soft' ? THREE.PCFSoftShadowMap : params.get('sh') === 'basic' ? THREE.BasicShadowMap : THREE.PCFShadowMap;
+renderer.shadowMap.type = params.get('sh') === 'pcf' ? THREE.PCFShadowMap : params.get('sh') === 'soft' ? THREE.PCFSoftShadowMap : params.get('sh') === 'basic' ? THREE.BasicShadowMap : mobile ? THREE.BasicShadowMap : THREE.PCFShadowMap;
 if (params.get('sh') === 'off') renderer.shadowMap.enabled = false;
 // Shadows are static: only the room and its furniture cast them, and the map is drawn once when a scene is built (shadowsDirty()).
 // The people and the things that move carry a soft blob under them instead, so no frame pays for a second pass over the scene.
@@ -301,7 +303,7 @@ export function render() { if (quality.lost) return; if (quality.outline) effect
 let qSince = performance.now(), qFrames = 0, qWarm = 1, qFast = 0;
 // Dynamic resolution first: the picture gets a little softer before anything disappears. The floor of 0.6 still reads
 // fine with the outlines; only a machine that cannot hold 30 there loses shadow detail, outlines and shadows, in that order.
-const MIN_PR = 0.6, MAX_PR = quality.pr, TARGET = 34;
+const MIN_PR = 0.6, MAX_PR = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO), TARGET = 34;
 function setPr(pr) { pr = Math.round(pr * 100) / 100; if (pr === quality.pr) return false; quality.pr = pr; renderer.setPixelRatio(pr); resize(); return true; }
 function down(fps) {
   if (quality.pr > MIN_PR) return setPr(Math.max(MIN_PR, quality.pr * Math.sqrt(Math.max(0.3, fps / TARGET)) * 0.95));
@@ -380,7 +382,7 @@ export function label(key, html, pos, { cls = '', pri = 1, click = null, anchor 
   if (!L) { const el = document.createElement('div'); host.append(el); L = { el, html: null, cls: null, click: undefined, pos: V(), w: 0, h: 0, x: NaN, y: NaN }; labels.set(key, L); }
   const c = `lbl ${cls}${click ? ' click' : ''}`;
   if (L.html !== html) { L.el.innerHTML = html; L.html = html; L.w = 0; }
-  if (L.cls !== c) { L.el.className = c; L.cls = c; L.w = 0; }
+  if (L.cls !== c) { L.el.className = c + (L.hid ? ' hid' : ''); L.cls = c; L.w = 0; }
   // the same value written every frame is still a DOM write: only a change touches the element
   if (L.click !== click) { L.click = click; if (click) L.el.dataset.goto = click; else delete L.el.dataset.goto; }
   L.pos.copy(pos); L.seen = frameNo; L.pri = pri; L.anchor = anchor;
@@ -388,6 +390,8 @@ export function label(key, html, pos, { cls = '', pri = 1, click = null, anchor 
 /** Removes every label at once (a scene is being unmounted). */
 export function clearLabels() { for (const L of labels.values()) L.el.remove(); labels.clear(); popHost.replaceChildren(); }
 const scr = {};
+// classList.toggle writes the attribute even when nothing changes, and every write costs a style pass on a phone
+function hide(L, on) { if (L.hid === on) return; L.hid = on; L.el.classList.toggle('hid', on); }
 export function placeLabels() {
   const w = stage.clientWidth, h = stage.clientHeight, taken = [];
   const live = [];
@@ -401,7 +405,7 @@ export function placeLabels() {
   for (const L of live) {
     toScreen(L.pos, scr);
     // a thing off the side of the screen (the camera follows the Waiter on a phone) has no label piled at the edge
-    if (scr.x < -30 || scr.x > w + 30 || scr.y > h + 30) { L.el.classList.add('hid'); continue; }
+    if (scr.x < -30 || scr.x > w + 30 || scr.y > h + 30) { hide(L, true); continue; }
     const ax = L.anchor === 'tl' ? scr.x : L.anchor === 'tr' ? scr.x - L.w : scr.x - L.w / 2, ay = L.anchor === 'bottom' ? scr.y - L.h : scr.y;
     const top = topOf();
     const right = w * (1 - view.dock) - 6, low = h * (1 - view.dockB) - 6;
@@ -412,7 +416,7 @@ export function placeLabels() {
       const t = { ...r, x: r.x + dx * (L.w * 0.6 + 6), y: r.y + dy * (L.h + 5) };
       if (t.x >= 6 && t.y >= top && t.x + t.w <= right && t.y + t.h <= low && !hits(t)) { r.x = t.x; r.y = t.y; ok = true; }
     }
-    L.el.classList.toggle('hid', !ok);
+    hide(L, !ok);
     if (!ok) continue;
     taken.push(r);
     const x = Math.round(r.x), y = Math.round(r.y);
