@@ -1,7 +1,7 @@
 // HUD, the focus card, speech bubbles, the docked review panel, and the two dialogs.
 // Nothing here stops the kitchen: the only <dialog>s are New order and the shift report.
 import { $, G, esc, mmss, nowS, orderOf, chefName, api, getJson, toast, emit, ICON, modelName, escalation } from './core.js';
-import { V, label, setDock, popup, spawn } from './scene.js';
+import { V, label, setDock, popup, spawn, device } from './scene.js';
 import { player, local, stationState, stateWords, plateLook, chefStations, chefIndex, passSlotOf, chefChar, kick, JARS, orderPos } from './world.js';
 
 export const ui = {
@@ -315,7 +315,7 @@ function syncReview(o) {
   $('rApprove').disabled = !!o.approved;
   $('rCold').hidden = true;
   $('rBack').textContent = look.cold ? 'Send back to merge main' : 'Send back';
-  $('rComment').placeholder = look.cold ? 'Cold plate: no note needed. Send back and the chef merges main' : 'B: write what to fix, then Enter sends it back';
+  $('rComment').placeholder = look.cold ? 'Cold plate: no note needed. Send back and the chef merges main' : device.touch ? 'What should the chef fix?' : 'B: write what to fix, then Enter sends it back';
 }
 function renderDiff(patch) {
   if (!patch) return { html: '<div class="file">No changes. The chef did not change any files. Send it back with what you expected.</div>', hunks: 0 };

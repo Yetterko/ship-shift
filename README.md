@@ -88,12 +88,23 @@ Two things take questions off your plate. A grant (install, network or delete) p
 
 The shift report gives one to three stars. Two stars need at least one ship, no failing tests shipped and a positive score. Three stars also need three ships, no conflicts, no blind ships and at most 10 points lost to waiting chefs.
 
+## Phones and tablets
+
+Open the same link on a phone. Tap a ticket, a chef, a plate or the hatch to walk there and use it; a tap takes the nearest thing, so aim does not have to be exact. Drag anywhere to steer with a thumb stick. Four thumb buttons do the rest: the big one does whatever E would do here and says so (Take, Give, Taste, Review, Carry, Ship), and the others are Put down, Call out and Urgent (the next thing that needs you).
+
+- **Upright:** the whole kitchen sits at the top, seen from steeper above. The focus card, a chef's question with full-width answers, and review as a bottom sheet are all laid out under it, so nothing covers the room.
+- **On its side:** the kitchen fills the left of the screen, with the card and the thumbs in a column on the right. Review docks on the right with the diff at full height.
+- **Tablets:** upright they use the phone's layout; on their side, the desktop's with the thumbs added.
+
+The page does not scroll or zoom, keeps clear of the notch, and shrinks to the room and the line you are typing while the keyboard is up. `?touch=1` forces the touch controls on a desktop browser and `?quality=low` draws at pixel ratio 1.
+
 ## Checks
 
 ```
 npm run check            # syntax of every script in server/, test/ and public/
 npm run smoke            # end to end with simulated chefs, about a minute
 npm run game             # headless run of the 3D kitchen: walk, carry, plan, answer, review, ship
+npm run mobile           # the same loop by touch on a phone, upright and on its side, plus a glance at a tablet
 node test/ui.mjs [dir]   # headless run of the list view
 ```
 

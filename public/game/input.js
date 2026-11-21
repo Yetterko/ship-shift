@@ -204,7 +204,7 @@ function nearestFree(x, z) {
   for (let r = 0.2; r < 2.5; r += 0.2) for (let a = 0; a < 6.3; a += 0.4) { const px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r; if (!blocked(px, pz)) return { x: px, z: pz }; }
   return { x: player.g.position.x, z: player.g.position.z };
 }
-function walkPoint(x, z) { const p = nearestFree(x, z); player.path = findPath(player.g.position, p); player.targetSt = null; }
+export function walkPoint(x, z) { const p = nearestFree(x, z); player.path = findPath(player.g.position, p); player.targetSt = null; }
 /** Walks to a station by the shortest clear route. With act, presses E on arrival. */
 export function walkTo(st, { act = true } = {}) {
   if (!st) return;
@@ -228,14 +228,17 @@ function nearest() {
 /* ======================= every frame ======================= */
 const SPEED = 6.2;
 let stepT = 0;
+/** The thumb stick, set by touch.js: a push of up to 1 in each direction, and a gentle push walks slowly. */
+export const stick = { x: 0, z: 0 };
 export function step(dt, t) {
   const pos = player.g.position;
   let mx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0), mz = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+  mx += stick.x; mz += stick.z;
   if (dialogOpen() || typing()) mx = mz = 0;
   player.dash = Math.max(0, player.dash - dt); player.dashCool = Math.max(0, player.dashCool - dt);
   const speed = SPEED * (player.dash > 0 ? 1.8 : 1);
   let arrived = null;
-  if (mx || mz) { const l = Math.hypot(mx, mz); mx /= l; mz /= l; }
+  if (mx || mz) { const l = Math.max(1, Math.hypot(mx, mz)); mx /= l; mz /= l; }
   else if (player.path?.length) {
     const p = player.path[0], dx = p.x - pos.x, dz = p.z - pos.z, d = Math.hypot(dx, dz);
     if (d < speed * dt + 0.03) {
