@@ -1,568 +1,389 @@
-// HUD, the focus card, speech bubbles, the docked review panel, and the two dialogs.
-// Nothing here stops the kitchen: the only <dialog>s are New order and the shift report.
-import { $, G, fx, esc, mmss, nowS, orderOf, chefName, api, getJson, toast, emit, ICON, modelName, escalation, quiet, arcade, can, kpath, whyNot, atHome } from './core.js';
-import { V, label, setDock, popup, spawn } from './scene.js';
-import { createBoard } from './board.js';
-import { player, local, stationState, stateWords, plateLook, chefStations, chefIndex, passSlotOf, chefChar, kick, JARS, orderPos } from './world.js';
+// The HTML panels over the 3D floor (FR-9): the order pad, the comment card, the receipt, the rail, the Stations, the
+// Chefs, help and the shift report. The review panel is review.js. One panel is open at a time, docked on the right on
+// a laptop and a bottom sheet on a phone. Every panel draws from the last snapshot, so it opens the moment it is tapped.
+import { esc, mmss, toast, emit } from './core.js';
+import { setDock } from './scene.js';
+import { isMuted, setMuted } from './audio.js';
+import { F, now, stationDef, customerById, chefWords, patienceLeft } from './floor.js';
+import { renderMeal, mealSig } from './review.js';
+import { itemEditor, wireEditor, toggleTyping, addTyped, textStep, wireTextStep, chipRow } from './quickpicks.js';
+import { CODES, LIMITS, STATION_LABEL, STATION_FILES } from '/shared/protocol.js';
 
-export const ui = {
-  taste: null, wip: null, wipAt: 0,           // station id being tasted, and its last live diff
-  input: null,                                // { mode: 'steer'|'answer', id } while the one-line input is open
-  review: null, hunks: 0, cur: 0,             // order id in the docked panel
-  reviewRemote: false,                        // opened from the board, so it does not close when you are not at the pass
-  board: false,                               // the board drawer is open
-  qFor: null, qStep: 0, qAnswers: {},
-  binChef: null,
-};
-const seen = new Map();                       // "id:rounds" -> { total, seen:Set }
-const seenKey = o => `${G.visit ? G.visit.of : 'home'}:${o.id}:${o.rounds}`;
-/** Another kitchen is about to be drawn: nothing that pointed at an order of the old one survives. */
-export function resetPanels() {
-  closeReview(); closeInput();
-  seen.clear();
-  Object.assign(ui, { taste: null, wip: null, qFor: null, qStep: 0, qAnswers: {}, qShown: null, binChef: null });
+/* ======================= the host ======================= */
+const P = { el: null, inner: null, key: null, states: new Map(), sig: null, opened: 0, lastOpenMs: 0 };
+export const panelKey = () => P.key;
+export const panelOpen = () => !!P.key;
+/** State a panel keeps across redraws (drafts, the hunk you are on, a half-written reason). One per key. */
+export function panelState(key = P.key) { if (!P.states.has(key)) P.states.set(key, { __key: key }); return P.states.get(key); }
+
+export function initPanels(ui) {
+  const el = document.createElement('aside');
+  el.className = 'fl-panel'; el.id = 'flPanel'; el.hidden = true; el.setAttribute('aria-live', 'polite');
+  el.innerHTML = '<button type="button" class="fl-close" aria-label="Close">×</button><div class="fl-inner"></div>';
+  ui.append(el);
+  el.querySelector('.fl-close').onclick = () => closePanel();
+  P.el = el; P.inner = el.querySelector('.fl-inner'); P.key = null; P.states.clear(); P.sig = null;
 }
-/** True once every hunk of the plate's diff has been looked at. Shipping without it is a blind ship. */
-export function diffSeen(o) { const s = seen.get(seenKey(o)); return !!s && s.seen.size >= s.total; }
+export function disposePanels() { P.el?.remove(); P.el = P.inner = null; P.key = null; P.states.clear(); setDock(0, 0); }
 
-for (const el of document.querySelectorAll('[data-icon]')) el.innerHTML = ICON[el.dataset.icon] || '';
-// A hint for one real key is also a button that presses it (input.js listens for data-k), so every action works by tap or click.
-const PRESSABLE = /^(E|Q|F|R|X|T|J|K|B|Tab|Shift|Enter|\?|[1-4])$/;
-const kbd = (k, text) => `<span class="k"${PRESSABLE.test(k) ? ` data-k="${k}" role="button"` : ''}><kbd>${k}</kbd>${text}</span>`;
-const secs = ms => { const s = ms / 1000; return s >= 10 ? String(Math.round(s)) : String(Math.round(s * 10) / 10); };
-
-/* ======================= HUD ======================= */
-let lastScore = null;
-export function hud() {
-  const S = G.own || G.S; if (!S) return;      // the HUD is always your own kitchen's, wherever you are standing
-  const t = nowS(), sh = S.shift;
-  const arc = arcade();
-  if (!hud.minutes) { hud.minutes = true; $('focusMin').value = sh.focusMin; $('breakMin').value = sh.breakMin; }
-  // an arcade round is service, not a quiet focus block: nothing is dimmed or held back
-  document.body.dataset.shift = sh.mode === 'focus' && arc ? 'service' : sh.mode;
-  $('shiftMode').textContent = sh.mode === 'focus' ? `Shift ${sh.no} · ${arc ? 'service' : 'focus'}` : sh.mode === 'break' ? (arc ? 'Shift over · run the pass' : 'Break · run the pass') : arc ? 'Take a ticket to start' : 'Start a shift';
-  const left = sh.endsAt ? sh.endsAt - t : 0;
-  $('shiftClock').textContent = sh.endsAt ? mmss(left) : mmss((Number($('focusMin').value) || 25) * 60000);
-  $('clockBtn').classList.toggle('last', sh.mode === 'focus' && left < 30000);
-  $('shiftBtn').textContent = sh.mode === 'off' ? 'Start shift' : 'End shift';
-  const live = S.questions.reduce((n, q) => n + (t - q.createdAt), 0);
-  $('mBlocked').textContent = mmss(S.stats.blockedMs + live);
-  $('mBlockedBox').classList.toggle('hot', S.questions.length > 0);
-  $('mShipped').textContent = S.stats.shipped;
-  $('mSpend').textContent = `$${S.stats.costUsd.toFixed(2)}`;
-  if (S.stats.score !== lastScore) {
-    $('mScore').textContent = S.stats.score;
-    if (lastScore !== null) { const el = $('scoreBox'); el.classList.remove('bump', 'drop'); void el.offsetWidth; el.classList.add(S.stats.score > lastScore ? 'bump' : 'drop'); }
-    lastScore = S.stats.score;
-  }
-  const streak = S.stats.streak ?? 1;
-  $('mStreak').textContent = `×${streak.toFixed(1)}`;
-  $('mStreak').classList.toggle('on', streak > 1);
-  if (ui.board) board.render(S);
+/** The line a refusal code reads as. */
+export const say = r => r?.message || CODES[r?.code] || 'That did not work.';
+/** Sends an action through the shell and says why when it is refused. */
+export async function doAct(name, args = {}, { quiet = false } = {}) {
+  if (!F.ctx) return { ok: false, code: 'bad_state' };
+  if (!F.you.canAct) { toast(CODES.view_only, 'bad'); return { ok: false, code: 'view_only' }; }
+  let r;
+  try { r = await F.ctx.act(name, args); } catch (e) { r = { ok: false, code: 'bad_state', message: e?.message }; }
+  r ||= { ok: false };
+  if (!r.ok && !quiet) { toast(say(r), 'bad'); emit('sfx', 'err'); }
+  if (r.ok) emit('acted', name, args);
+  return r;
 }
-setInterval(hud, 500);
-
-$('clockBtn').onclick = () => { $('shiftPop').hidden = !$('shiftPop').hidden; };
-$('shiftBtn').onclick = async () => {
-  try {
-    if (G.S.shift.mode === 'off') await api('/api/shift/start', { focusMin: Number($('focusMin').value), breakMin: Number($('breakMin').value) });
-    else await api('/api/shift/stop');
-    $('shiftPop').hidden = true;
-  } catch { /* toasted */ }
-};
-$('newOrderBtn').onclick = () => { $('orderForm').reset(); $('orderDialog').showModal(); $('oTitle').focus(); };
-$('orderCancel').onclick = () => $('orderDialog').close();
-$('orderForm').addEventListener('submit', async e => {
-  e.preventDefault();
-  const size = document.querySelector('input[name="oSize"]:checked')?.value || 'M';
-  try { await api('/api/orders', { title: $('oTitle').value, body: $('oBody').value, size }); $('orderDialog').close(); } catch { /* toasted */ }
-});
-
-/* ======================= speech bubble over a blocked chef ======================= */
-function bubble(st, q, chef) {
-  if (ui.qFor !== q.id) { ui.qFor = q.id; ui.qStep = 0; ui.qAnswers = {}; }
-  // what this wait has cost so far rides on the corner of the bubble, where the eyes already are
-  if (ui.qShown !== q.id) { ui.qShown = q.id; ui.qAt = performance.now(); }
-  const cost = (q.charged ? `<span class="cost" title="Points this wait has cost you">−${q.charged}</span>` : '')
-    + (ui.guideAnswer ? `<div class="bhint">Your chef is paused until you answer. ${document.body.classList.contains('touch') ? 'Tap one.' : 'Click one, or press its number.'}</div>` : '');
-  const fresh = performance.now() - ui.qAt < 350;
-  // a visitor who may not answer sees the question and its options, and why they are not theirs to press
-  const ro = !can('answer'), key = k => (ro ? '' : ` data-key="${k}"`), num = k => (ro ? '' : `<kbd>${k}</kbd>`);
-  const foot = keys => (ro ? `<div class="bf why">${esc(whyNot('answer'))}</div>` : `<div class="bf">${keys}</div>`);
-  let html;
-  if (q.kind === 'question') {
-    const cur = q.questions[ui.qStep] || q.questions[0] || { question: 'Needs an answer', options: [] };
-    html = `<div class="bq">${q.questions.length > 1 ? `<small>${ui.qStep + 1}/${q.questions.length}</small> ` : ''}${esc(cur.question)}</div><ol>${(cur.options || []).slice(0, 4).map((op, i) => `<li${key(i + 1)}>${num(i + 1)}<span><b>${esc(op.label)}</b>${op.description ? `<small>${esc(op.description)}</small>` : ''}</span></li>`).join('')}</ol>${foot(kbd('X', 'your call') + kbd('T', 'type it'))}`;
-  } else {
-    const detail = String(q.input?.command ?? q.reason ?? q.toolName ?? '').slice(0, 140);
-    // "Always" is a grant for the whole shift, and grants are the owner's
-    const jar = G.visit ? null : JARS.find(j => j.cls === q.grantClass);
-    html = `<div class="bq">May I run this?</div><code>${esc(detail)}</code><ol><li${key(1)}>${num(1)}<span><b>Once</b></span></li>${jar ? `<li data-key="2"><kbd>2</kbd><span><b>Always this shift</b><small>${esc(jar.name)} jar for everyone</small></span></li>` : ''}<li${key(3)}>${num(3)}<span><b>No</b><small>find another way</small></span></li></ol>${foot(kbd('T', 'no, with a note'))}`;
-  }
-  if (ro) html = html.replace('<ol>', '<ol class="ro">');
-  const right = st.j < 2;
-  // on a phone there is no room for a bubble beside the chef: the same question is a sheet at the bottom, with fat options to tap
-  if (document.body.classList.contains('narrow')) {
-    const sheet = `<div class="bub sheet${q.charged ? ' costly' : ''}"><small class="who">${esc(chef.name)} asks${G.visit ? ` ${esc(G.visit.owner)}` : ''}</small>${cost}${html}</div>`;
-    if (sheet !== sheetHtml) { $('qsheet').innerHTML = sheet; sheetHtml = sheet; }
-    ui.sheet = true;
-    return;
-  }
-  label('bubble', `<div class="bub ${right ? 'tl' : 'tr'}${q.charged ? ' costly' : ''}${fresh ? ' in' : ''}">${cost}${html}</div>`, V(st.stand.x + (right ? 0.75 : -0.75), 2.0, st.stand.z), { pri: 10, anchor: right ? 'tl' : 'tr', cls: 'solid' });
+export const viewOnly = () => '<span class="fl-viewonly"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12c2.5-4.5 5.7-6.5 9.5-6.5s7 2 9.5 6.5c-2.5 4.5-5.7 6.5-9.5 6.5s-7-2-9.5-6.5z" fill="none" stroke="currentColor" stroke-width="2.4"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>View only</span>';
+/**
+ * A button. act: an action name sent with args; goto: a panel to open instead; handler: a name looked up in wireActs.
+ * Visitors see "View only" in place of anything that acts.
+ */
+export function actBtn(label, act, args, cls = '', goto = null, handler = null, disabled = false) {
+  if (!goto && !F.you.canAct) return viewOnly();
+  const data = goto ? `data-goto-panel="${esc(goto)}"` : handler ? `data-do="${esc(handler)}"` : `data-do="act:${esc(act)}" data-args="${esc(JSON.stringify(args || {}))}"`;
+  return `<button type="button" class="fl-btn ${cls}" ${data} ${disabled ? 'disabled' : ''}>${label}</button>`;
+}
+/** Wires every [data-do] and [data-goto-panel] button in el. handlers: name -> async fn. */
+export function wireActs(el, handlers = {}) {
+  el.querySelectorAll('[data-do]').forEach(b => {
+    if (b.__wired) return; b.__wired = true;
+    b.onclick = async () => {
+      const d = b.dataset.do;
+      b.disabled = true;
+      try {
+        if (handlers[d]) await handlers[d]();
+        else if (d.startsWith('act:')) await doAct(d.slice(4), JSON.parse(b.dataset.args || '{}'));
+      } finally { if (b.isConnected) b.disabled = false; }
+    };
+  });
+  el.querySelectorAll('[data-goto-panel]').forEach(b => { if (!b.__wired) { b.__wired = true; b.onclick = () => openPanel(b.dataset.gotoPanel); } });
 }
 
-export async function answerKey(q, k) {
-  if (!can('answer')) { toast(whyNot('answer'), 'bad'); return; }
-  if (G.visit && k === '2') return;
-  const post = body => { const chef = chefChar(q.chefId); if (chef) kick(chef, 0.4); emit('sfx', body.allow ? 'yes' : 'no'); spawn('star', chefStations[chefIndex(q.chefId)].potPos, ['#ffd75e', '#fff1d6'], { n: 8, up: 1.6, out: 1.6, life: 0.6, grow: 0 }); return api(kpath(`/api/questions/${q.id}/answer`), body).catch(() => {}); };
-  if (k === 'x') { if (q.kind !== 'question') return; return post({ allow: false, message: 'Skipped by the head chef. Use your best judgement and say what you assumed.' }); }
-  if (q.kind === 'question') {
-    const cur = q.questions[ui.qStep]; const op = cur?.options?.[Number(k) - 1]; if (!op) return;
-    ui.qAnswers[cur.question] = op.label;
-    if (ui.qStep + 1 < q.questions.length) { ui.qStep++; emit('sfx', 'pick'); return; }
-    return post({ allow: true, answers: ui.qAnswers });
-  }
-  if (k === '1') return post({ allow: true });
-  if (k === '2' && q.grantClass) return post({ allow: true, always: true });
-  if (k === '3') return post({ allow: false });
+/* ======================= open, redraw, close ======================= */
+/** Opens a panel by key ('customer:c1', 'table:0', 'pass', 'meal:m1', 'rail', 'station:backend', 'chef:pixel', 'line', 'help', 'report'). */
+export function openPanel(key, { keepState = true, force = false } = {}) {
+  if (!P.el || !F.snap) return false;
+  const S = F.snap;
+  if (key === 'pass') key = passKey(S);
+  if (S.mustBreak && F.you.canAct && !['help', 'report'].includes(key)) { emit('mustBreak'); return false; }
+  const changed = P.key !== key;
+  if (changed && !keepState) P.states.delete(key);
+  P.key = key; P.el.hidden = false; P.el.dataset.kind = key.split(':')[0];
+  document.body.classList.add('fl-panel-open');
+  if (changed || force) { P.sig = null; P.opened++; P.lastOpenMs = performance.now(); }
+  draw(force || changed);
+  if (changed) { emit('sfx', 'open'); P.inner.scrollTop = 0; }
+  emit('panel', key);
+  return true;
 }
-function typedAnswer(q, text) {
-  if (q.kind === 'question') {
-    const cur = q.questions[ui.qStep]; ui.qAnswers[cur.question] = text;
-    if (ui.qStep + 1 < q.questions.length) { ui.qStep++; return; }
-    emit('sfx', 'yes');
-    return api(kpath(`/api/questions/${q.id}/answer`), { allow: true, answers: ui.qAnswers }).catch(() => {});
-  }
-  emit('sfx', 'no');
-  return api(kpath(`/api/questions/${q.id}/answer`), { allow: false, message: text }).catch(() => {});
+export function closePanel() {
+  if (!P.key || !P.el) return;
+  const k = P.key; P.key = null; P.el.hidden = true; document.body.classList.remove('fl-panel-open');
+  P.states.get(k) && saveDraftsOnClose(k);
+  setDock(0, 0); emit('panel', null);
+}
+/** Called on every snapshot: the open panel redraws only when what it shows changed. */
+export function refreshPanel() { if (P.key && F.snap) draw(false); }
+
+function draw(force) {
+  const S = F.snap, key = P.key, [kind, id] = key.split(':');
+  const def = PANELS[kind]; if (!def) return closePanel();
+  const sig = `${key}|${def.sig(S, id)}|${F.you.canAct}`;
+  if (!force && sig === P.sig) return;
+  P.sig = sig;
+  // keep the caret where it was when a redraw lands while someone types
+  const a = document.activeElement, keep = a?.dataset?.keep && P.inner.contains(a) ? { k: a.dataset.keep, s: a.selectionStart, e: a.selectionEnd } : null;
+  def.render(P.inner, S, id);
+  wireActs(P.inner);
+  if (keep) { const t = P.inner.querySelector(`[data-keep="${keep.k}"]`); if (t) { t.focus(); try { t.setSelectionRange(keep.s, keep.e); } catch { /* not text */ } } }
+  P.el.dataset.kind = kind;
+  // measured on the next frame, so the tap that opened the panel does no layout work
+  requestAnimationFrame(() => dock());
+}
+/** The room slides out from under the panel: right on a laptop, up on a phone. */
+export function dock() {
+  if (!P.key || !P.el) return setDock(0, 0);
+  const st = P.el.parentElement?.getBoundingClientRect(), r = P.el.getBoundingClientRect();
+  if (!st || !st.width) return;
+  if (document.body.dataset.layout === 'portrait') setDock(0, Math.min(0.7, Math.max(0, (st.bottom - r.top) / st.height)));
+  else setDock(Math.min(0.55, Math.max(0, (st.right - r.left + 8) / st.width)), 0);
+}
+addEventListener('resize', () => dock());
+
+/** Tapping the Pass opens the first Meal that still needs a look, else the Pass itself. */
+function passKey(S) {
+  const first = S.pass.find(id => !['approved'].includes(S.items[S.meals[id]?.itemId]?.status));
+  return first ? `meal:${first}` : 'passlist';
 }
 
-/* ======================= the one-line input: call out (F) and typed answers (T) ======================= */
-export function openInput(mode, id, placeholder) {
-  ui.input = { mode, id };
-  $('lineForm').hidden = false; $('lineInput').value = ''; $('lineInput').placeholder = placeholder;
-  $('lineInput').focus();
+/* ======================= small pieces ======================= */
+const stars = (n, of = 3) => `<span class="fl-stars" aria-label="${n} of ${of}">${Array.from({ length: of }, (_, i) => `<i class="${i < n ? 'on' : ''}">★</i>`).join('')}</span>`;
+const itemStatusWord = { draft: 'draft', queued: 'on the rail', waiting_stove: 'waiting for a stove', cooking: 'cooking', ready: 'on the Pass', sampled: 'being sampled', approved: 'approved', served: 'served', burnt: 'burnt, retrying' };
+const freeTable = S => S.tables.findIndex(t => !t);
+const orderItems = (S, c) => c.order.itemIds.map(i => S.items[i]).filter(Boolean);
+function orderCard(o, { open = true } = {}) {
+  return `<details class="fl-order" ${open ? 'open' : ''}><summary><span class="fl-src">${esc(o.source)}</span><b>#${o.number} ${esc(o.title)}</b></summary>
+    <p>${esc(o.description)}</p>
+    <ul class="fl-ac">${o.acceptanceCriteria.map(a => `<li>${esc(a)}</li>`).join('')}</ul>
+    <div class="fl-row"><span>Difficulty ${stars(o.difficulty)}</span><span class="fl-size ${esc(o.size)}">${esc(o.size)}</span></div></details>`;
 }
-export function closeInput() { ui.input = null; $('lineForm').hidden = true; $('lineInput').blur(); }
-$('lineForm').addEventListener('submit', async e => {
-  e.preventDefault();
-  const text = $('lineInput').value.trim(), inp = ui.input;
-  if (!inp || !text) return closeInput();
-  closeInput();
-  if (inp.mode === 'steer') {
-    const o = orderOf(inp.id);
-    try {
-      await api(`/api/orders/${inp.id}/steer`, { note: text });
-      emit('sfx', 'shout'); const ch = chefChar(o?.chefId); if (ch) kick(ch, 0.5);
-      popup('Heard, chef!', orderPos(o), 'good');
-    } catch { /* toasted */ }
-  } else { const q = G.S.questions.find(x => x.id === inp.id); if (q) typedAnswer(q, text); }
-});
-$('lineInput').addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); closeInput(); } });
+function patienceBar(p, label) {
+  const f = patienceLeft(p); if (f === null) return '';
+  return `<div class="fl-pat ${f < 0.34 ? 'low' : ''}"><span>${esc(label)}</span><i style="--p:${Math.round(f * 100)}%"></i></div>`;
+}
 
-/* ======================= focus card: detail for the one station you are standing at ======================= */
-const feed = (o, n) => o.activity.slice(-n).reverse().map(a => `<li class="${a.kind}">${esc(a.text)}</li>`).join('');
-const chips = o => [
-  o.plan ? '<span class="chip2 plan">planned</span>' : '',
-  ...(o.grants || []).map(c => `<span class="chip2 ${c}">${esc(c)}</span>`),
-  o.refires ? `<span class="chip2 warn">re-fired ${o.refires}×</span>` : '',
-  o.rounds ? `<span class="chip2 warn">round ${o.rounds + 1}</span>` : '',
-].join('');
-function overlapsOf(o) {
-  return (G.S.overlaps || []).filter(([a, b]) => a === o.id || b === o.id).map(([a, b, files, conflicts]) => (conflicts || []).length
-    ? `<div class="warnline hard">${ICON.flame} Conflicts with #${a === o.id ? b : a} in ${esc(conflicts.slice(0, 3).join(', '))}. Whichever ships second goes cold.</div>`
-    : `<div class="warnline">${ICON.link} Edits the same files as #${a === o.id ? b : a}: ${esc((files || []).slice(0, 3).join(', '))}.</div>`).join('');
-}
-function patience(o) {
-  const frac = Math.max(0, 1 - (nowS() - o.createdAt) / (o.targetMin * 60000));
-  return `<div class="pbar ${frac < 0.2 ? 'late' : frac < 0.5 ? 'warn' : ''}"><i style="width:${Math.round(frac * 100)}%"></i></div>`;
-}
-/** The card for a station in a kitchen you are visiting: the same facts, and only the keys the owner's door sign gives you. */
-function describe(st) {
-  const d = describeOwn(st), v = G.visit;
-  if (!d || !v || st.type === 'door') return d;
-  d.eyebrow = d.eyebrow ? `${v.owner}'s kitchen · ${d.eyebrow}` : `${v.owner}'s kitchen`;
-  d.keys = ''; d.wide = false;
-  if (st.type === 'chef') {
-    const { question: q, chef } = stationState(st);
-    if (q) { d.extra = ''; d.sub = can('answer') ? `${chef.name} is paused until somebody answers. You can: pick one in the bubble.` : whyNot('answer'); d.keys = !can('answer') ? '' : q.kind === 'question' ? kbd('1–4', 'answer') + kbd('T', 'type') : kbd('1', 'once') + kbd('3', 'no'); }
-    else if (!stationState(st).order) d.sub = `Waiting for ${v.owner} to bring a ticket.`;
-  } else if (st.type === 'pass') {
-    const { order: o } = stationState(st);
-    if (o) { d.sub = !can('approve') ? whyNot('approve') : o.approved ? `Approved. Only ${v.owner} carries it to the hatch.` : `You can review this plate for ${v.owner}.`; d.keys = can('approve') && !o.approved ? kbd('E', 'review') : ''; }
-  } else if (st.type === 'slot' && stationState(st).order) d.sub = `Only ${v.owner} hands out tickets here.`;
-  return d;
-}
-function describeOwn(st) {
-  const S = G.S, c = player.carry, jar = c?.type === 'jar' ? JARS.find(j => j.cls === c.id) : null;
-  switch (st.type) {
-    case 'door': {
-      if (G.visit) return { eyebrow: `${G.visit.owner}'s kitchen`, title: 'Door to the park', sub: 'Step back outside.', keys: kbd('E', 'leave') };
-      if (c?.type === 'ticket') {
-        const o = orderOf(c.id);
-        return o?.cardId ? { eyebrow: `#${o.id} · ${o.size} · in your hands`, title: 'Send this customer back to the park?', sub: 'They rejoin your team\'s backlog, for you or a teammate to pick up later.', keys: kbd('E', 'back to the backlog') + kbd('Q', 'keep it') }
-          : { title: 'Door to the park', sub: 'This order was written here, so it has no customer to send back.', keys: kbd('Q', 'put it back') };
+/* ======================= the panels ======================= */
+const PANELS = {
+  /* ---- a Customer in the line: their Order, and Seat ---- */
+  customer: {
+    sig: (S, id) => { const c = customerById(id); return `${c?.status}|${c?.table}|${S.tables.map(t => t?.id).join()}|${S.line.map(c => c.id).join()}`; },
+    render(el, S, id) {
+      const c = customerById(id);
+      if (!c) { el.innerHTML = '<div class="fl-head"><h2>Gone</h2></div><p>That Customer has left.</p>'; return; }
+      if (c.status !== 'in_line' && c.table != null) return PANELS.table.render(el, S, String(c.table));
+      const ft = freeTable(S), pos = S.line.findIndex(x => x.id === id);
+      el.innerHTML = `
+        <div class="fl-head"><small>In the line · ${pos === 0 ? 'next up' : `${pos + 1}${['st', 'nd', 'rd'][pos] || 'th'} in line`}</small><h2>${esc(c.name)}</h2><p class="fl-persona">${esc(c.persona)}</p></div>
+        <div class="fl-body fl-pad">${orderCard(c.order)}</div>
+        <div class="fl-foot"><div class="fl-row">${ft < 0 ? `<span class="fl-warn">${esc(CODES.no_table)}</span>` : actBtn(`Seat at Table ${ft + 1}`, null, null, 'ok big', null, 'seat')}</div></div>`;
+      wireActs(el, { seat: async () => { const r = await doAct('seat', { customerId: id, table: ft }); if (r.ok) openPanel(`table:${ft}`); } });
+    },
+  },
+
+  /* ---- the whole line ---- */
+  line: {
+    sig: S => `${S.line.map(c => c.id).join()}|${S.tables.map(t => t?.id).join()}`,
+    render(el, S) {
+      const ft = freeTable(S);
+      el.innerHTML = `<div class="fl-head"><small>The line · tasks not started</small><h2>${S.line.length} waiting</h2></div>
+        <div class="fl-body"><ol class="fl-list">${S.line.map(c => `<li><button type="button" class="fl-rowbtn" data-goto-panel="customer:${c.id}"><span class="fl-size ${c.order.size}">${c.order.size}</span><b>#${c.order.number} ${esc(c.order.title)}</b><small>${esc(c.name)} · ${esc(c.order.source)}</small></button></li>`).join('') || '<li class="fl-empty">The line is empty.</li>'}</ol></div>
+        <div class="fl-foot">${S.line.length && ft >= 0 ? actBtn(`Seat next at Table ${ft + 1}`, null, null, 'ok', null, 'seatNext') : ft < 0 ? `<span class="fl-warn">${esc(CODES.no_table)}</span>` : ''}</div>`;
+      wireActs(el, { seatNext: async () => { const c = S.line[0]; const r = await doAct('seat', { customerId: c.id, table: ft }); if (r.ok) openPanel(`table:${ft}`); } });
+    },
+  },
+
+  /* ---- a table: the order pad, the serve tray, the comment card or the receipt, by where the Order is ---- */
+  table: {
+    sig(S, id) {
+      const c = S.tables[+id];
+      if (!c) return `free|${S.line[0]?.id}`;
+      const its = orderItems(S, c).map(i => `${i.id}:${i.status}:${i.redoCount}`).join();
+      return `${c.id}|${c.status}|${c.feedbackRead}|${c.feedbackRound}|${its}|${!!c.receipt}|${Math.round((patienceLeft(c.patience) ?? 1) * 20)}`;
+    },
+    render(el, S, id) {
+      const t = +id, c = S.tables[t], st = panelState();
+      if (!c) {
+        if (st.receipt) return receipt(el, st.receipt, t, S);
+        el.innerHTML = `<div class="fl-head"><small>Table ${t + 1}</small><h2>A free table</h2></div><div class="fl-body"><p>Seat a Customer from the line to start their Order.</p></div>
+          <div class="fl-foot">${S.line.length ? actBtn(`Seat ${esc(S.line[0].name)}`, null, null, 'ok', null, 'seatNext') : '<span>The line is empty.</span>'}</div>`;
+        wireActs(el, { seatNext: async () => { await doAct('seat', { customerId: S.line[0].id, table: t }); } });
+        return;
       }
-      if (c) return { title: 'Door to the park', sub: 'Put that down before you go out.', keys: kbd('Q', 'put it back') };
-      return { eyebrow: 'The town', title: 'Door to the park', sub: 'Your team\'s backlog waits outside. While you are out your door says "Back soon" and nobody new is seated.', keys: kbd('E', 'step outside') };
-    }
-    case 'slot': {
-      const { order: o } = stationState(st);
-      if (!o) return { title: 'Order window', sub: 'No ticket in this spot.', keys: '' };
-      if (c?.type === 'ticket' && c.id === o.id) return { eyebrow: `#${o.id} · ${o.size} · in your hands`, title: o.title, sub: 'Carry it to a free chef, or to the prep board to plan it first.', extra: patience(o) + chips(o), keys: kbd('Q', 'put it back') };
-      const keys = jar ? kbd('E', `shake ${jar.name} on #${o.id}`) : c ? kbd('Q', 'put that down first') : kbd('E', 'take the ticket');
-      return { eyebrow: `#${o.id} · ${o.size} · ${stateWords(o)}`, title: o.title, sub: o.body, extra: patience(o) + chips(o) + overlapsOf(o), keys };
-    }
-    case 'chef': {
-      const { chef, order: o, question: q } = stationState(st);
-      if (!chef) return null;
-      const who = `${chef.name} · ${modelName(chef.model)}`;
-      if (q) {
-        const every = secs(S.escalation?.everyMs ?? 10000 / (S.pace || 1)), grace = secs(escalation().smokeMs);
-        const costLine = q.charged ? `<div class="costline"><b>−${q.charged}</b><span>Keeping ${chef.name} waiting has cost you ${q.charged} point${q.charged === 1 ? '' : 's'}, and costs one more every ${every} s.</span></div>` : '';
-        return { tone: 'bad', eyebrow: `${who} · blocked ${mmss(nowS() - q.createdAt)}`, title: `#${o?.id ?? ''} ${o?.title ?? ''}`, sub: q.charged ? '' : quiet() ? 'Held for your break, but the clock is still counting.' : `Answer in the bubble. After ${grace} s a waiting chef costs a point every ${every} s.`, extra: costLine, keys: q.kind === 'question' ? kbd('1–4', 'answer') + kbd('X', 'your call') + kbd('T', 'type') : kbd('1', 'once') + (q.grantClass ? kbd('2', 'always') : '') + kbd('3', 'no') };
-      }
-      if (!o) return { eyebrow: who, title: `${chef.name} is free`, sub: c?.type === 'ticket' ? (orderOf(c.id)?.plan ? 'The ticket is planned: fewer questions.' : 'Unplanned: quicker to start, more likely to ask or miss.') : 'Bring a ticket from the window.', keys: c?.type === 'ticket' ? kbd('E', `give #${c.id} to ${chef.name}`) : '' };
-      if (o.state === 'stalled') return { tone: 'bad', eyebrow: `${who} · stalled`, title: `#${o.id} ${o.title}`, sub: o.error || 'The agent stopped.', keys: kbd('E', 'resume') + kbd('X', ui.binChef === o.id ? 'press again to bin' : 'bin it') };
-      if (o.state === 'cooking') {
-        const tools = o.activity.filter(a => a.kind === 'tool').length;
-        const tasting = ui.taste === st.id;
-        let extra = `<ul class="feed">${feed(o, tasting ? 5 : 2)}</ul>` + chips(o) + overlapsOf(o);
-        if (tasting) extra = wipHtml() + extra;
-        const keys = jar ? kbd('E', `shake ${jar.name} into the pot`) : kbd('E', tasting ? 'stop tasting' : 'taste: live diff') + kbd('F', 'call out');
-        return { eyebrow: `${who} · cooking ${mmss(nowS() - o.assignedAt)} · ${tools} tools${(o.touched || []).length ? ` · ${o.touched.length} files` : ''}`, title: `#${o.id} ${o.title}`, extra, keys, wide: tasting };
-      }
-      return { eyebrow: who, title: `#${o.id} ${o.title}`, sub: `${stateWords(o)}.`, keys: '' };
-    }
-    case 'prep': {
-      const { order: o } = stationState(st);
-      if (o?.state === 'planning') return { eyebrow: `Prep board · planning #${o.id}`, title: o.title, extra: `<ul class="feed">${feed(o, 3)}</ul>`, keys: '' };
-      if (o) return { eyebrow: `Prep board · plan ready for #${o.id}`, title: o.title, extra: `<pre class="plan">${esc(o.plan || '')}</pre>`, keys: c ? '' : kbd('E', 'pick it up'), wide: true };
-      if (c?.type === 'ticket') return orderOf(c.id)?.plan ? { title: 'Prep board', sub: 'This ticket already has a plan. Give it to a chef.', keys: '' } : { title: 'Prep board', sub: 'Plan first: a read-only pass that writes the steps. Slower to start, fewer questions and send-backs.', keys: kbd('E', `prep #${c.id}`) };
-      return { title: 'Prep board', sub: 'Drop a ticket here to plan it before a chef cooks it.', keys: '' };
-    }
-    case 'jar': {
-      const always = (S.grants || []).includes(st.cls);
-      if (c?.type === 'jar' && c.id === st.cls) return { title: `${st.def.name} jar`, sub: 'Carry it to a ticket or a chef and shake it on.', keys: kbd('E', 'put it back') };
-      return { eyebrow: always ? 'Granted to every chef this shift' : 'Spice rack', title: `${st.def.name} jar`, sub: `Pre-grants ${st.def.what}, so the chef never stops to ask.`, keys: c ? '' : kbd('E', 'pick it up') };
-    }
-    case 'oven': {
-      const { orders } = stationState(st), on = !!S.rules?.autoRefire;
-      return { eyebrow: orders.length ? `Testing ${orders.map(o => `#${o.id}`).join(', ')} with ${esc(S.testCmd || 'the tests')}` : 'The oven runs the tests', title: `Re-fire once on fail: ${on ? 'ON' : 'OFF'}`, sub: on ? 'A failing plate goes straight back to its chef once, with the test output, at no penalty.' : 'Failing plates come to the pass burnt, for you to send back.', keys: kbd('E', 'flip the lever') };
-    }
-    case 'pass': {
-      const { order: o } = stationState(st);
-      if (!o) return { title: 'The pass', sub: 'Plates arrive here on their own once the oven is done.', keys: '' };
-      const look = plateLook(o);
-      const facts = [
-        o.tests ? `<span class="chip2 ${o.tests.ok ? 'ok' : 'bad'}">tests ${o.tests.ok ? 'pass' : 'fail'}</span>` : '',
-        o.diff?.stat ? `<span class="chip2">${o.diff.stat.files} files +${o.diff.stat.added} −${o.diff.stat.removed}</span>` : '',
-        look.cold ? `<span class="chip2 cold">cold: conflicts in ${esc((o.merge.conflicts || []).join(', ') || 'main')}</span>` : o.merge ? '<span class="chip2 ok">merges clean</span>' : '',
-        look.approved ? '<span class="chip2 gold">approved</span>' : '',
-      ].join('');
-      const keys = c ? kbd('Q', 'hands full') : look.approved ? kbd('E', 'carry to the hatch') + kbd('R', 'look again') : kbd('E', 'review');
-      return { tone: look.cold ? 'cold' : look.burnt ? 'bad' : '', eyebrow: `#${o.id} · cooked by ${chefName(o.chefId)} · ${stateWords(o)}`, title: o.title, extra: facts + overlapsOf(o), keys };
-    }
-    case 'hatch': {
-      if (c?.type !== 'plate') return { title: `Hatch to ${S.mainBranch || 'main'}`, sub: 'Carry an approved plate here to merge it. You choose the order.', keys: '' };
-      const o = orderOf(c.id), look = plateLook(o), blind = !diffSeen(o);
-      return { tone: look.cold ? 'cold' : '', eyebrow: `Ship #${o.id} to ${S.mainBranch || 'main'}`, title: o.title, sub: look.cold ? 'This plate went cold: main moved under it. Shipping will spoil it and send it back.' : blind ? 'Blind ship: you have not seen the whole diff, so no bonus.' : 'Seen and approved.', keys: kbd('E', 'ship it') };
-    }
-    case 'bin':
-      if (!c || c.type === 'jar') return { title: 'Bin', sub: 'Carry a ticket or plate here to throw the order away.', keys: '' };
-      return { tone: 'bad', title: `Bin #${c.id}?`, sub: 'Stops its chef and deletes its branch.', keys: kbd('E', local.binConfirm?.id === c.id ? 'press again to confirm' : 'bin it') };
-  }
-  return null;
-}
-function wipHtml() {
-  const w = ui.wip;
-  if (!w) return '<div class="wip"><div class="file">Tasting…</div></div>';
-  if (w.error) return '<div class="wip"><div class="file">Nothing to taste yet.</div></div>';
-  const stat = w.stat ? `${w.stat.files} files, +${w.stat.added} −${w.stat.removed}` : 'work in progress';
-  return `<div class="wip"><div class="file">Live diff · ${esc(stat)}</div>${w.patch ? diffLines(w.patch, 60) : '<div class="ln">No changes on disk yet.</div>'}</div>`;
-}
-function diffLines(patch, max = 1e9) {
-  const out = [];
-  for (const l of patch.split('\n')) {
-    if (out.length >= max) { out.push('<div class="ln hh">…</div>'); break; }
-    if (l.startsWith('diff --git')) { out.push(`<div class="file">${esc(l.replace(/^diff --git a\/(.*) b\/.*/, '$1'))}</div>`); continue; }
-    if (/^(index |--- |\+\+\+ |new file|deleted file|similarity|rename |\\ No newline)/.test(l)) continue;
-    out.push(`<div class="ln ${l.startsWith('@@') ? 'hh' : l.startsWith('+') ? 'add' : l.startsWith('-') ? 'del' : ''}">${esc(l) || ' '}</div>`);
-  }
-  return out.join('');
-}
+      if (c.status === 'paying') { st.receipt = { c: JSON.parse(JSON.stringify(c)) }; return receipt(el, st.receipt, t, S); }
+      st.receipt = null;
+      const items = orderItems(S, c), drafts = items.filter(i => i.status === 'draft');
+      if (c.status === 'awaiting_player' && !st.more && !drafts.length) return feedbackCard(el, S, c, t, st);
+      if (c.status === 'seated' || drafts.length || st.more) return orderPad(el, S, c, t, st, drafts);
+      return tray(el, S, c, t, st, items);
+    },
+  },
 
-let cardHtml = '', sheetHtml = '';
-const idleCard = () => {
-  const c = player.carry;
-  if (c) return `<div class="row1"><b>Carrying ${c.type === 'jar' ? `the ${esc(JARS.find(j => j.cls === c.id)?.name)} jar` : `${c.type} #${c.id}`}</b><span class="keys">${kbd('Q', 'put it back')}</span></div>`;
-  return `<div class="keys idle">${kbd('WASD', 'or click to walk')}${kbd('E', 'use')}${kbd('Shift', 'dash')}${kbd('Tab', 'most urgent')}${kbd('?', 'help')}</div>`;
-};
-export function frame(near) {
-  const S = G.S;
-  // tasting follows your feet: step away and the lid goes back on
-  if (ui.taste && near?.id !== ui.taste) { ui.taste = null; ui.wip = null; }
-  if (ui.taste) {
-    const o = stationState(near).order;
-    if (!o || o.state !== 'cooking') { ui.taste = null; ui.wip = null; }
-    else if (performance.now() - ui.wipAt > 1500) {
-      ui.wipAt = performance.now();
-      getJson(`/api/orders/${o.id}/wip`).then(w => { if (ui.taste) ui.wip = w; }, () => { if (ui.taste) ui.wip = { error: true }; });
-    }
-  }
-  if (ui.input && (!near || near.type !== 'chef')) closeInput();
-  if (ui.binChef && near?.type !== 'chef') ui.binChef = null;
+  /* ---- the Pass when everything on it is approved, or nothing is ---- */
+  passlist: {
+    sig: S => S.pass.map(id => `${id}:${S.items[S.meals[id]?.itemId]?.status}`).join(),
+    render(el, S) {
+      el.innerHTML = `<div class="fl-head"><small>The Pass · review before it goes out</small><h2>${S.pass.length ? `${S.pass.length} on the Pass` : 'Nothing on the Pass'}</h2></div>
+        <div class="fl-body">${S.pass.length ? `<ol class="fl-list">${S.pass.map(mid => { const m = S.meals[mid], it = S.items[m.itemId], cu = customerById(it?.customerId); return `<li><button type="button" class="fl-rowbtn" data-goto-panel="meal:${mid}"><span class="fl-st on st-${it?.station}">${esc(stationDef(it?.station).name)}</span><b>${esc(it?.status === 'approved' ? 'Approved' : 'To sample')}</b><small>Table ${(cu?.table ?? 0) + 1} · ${esc(cu?.name || '')}</small></button></li>`; }).join('')}</ol><p>Approved Meals wait here until you serve them at their table.</p>` : '<p>Chefs put finished Meals here. You sample each one before a Customer sees it.</p>'}</div>`;
+    },
+  },
+  meal: { sig: mealSig, render: renderMeal },
 
-  let d = null;
-  ui.sheet = false;
-  if (near) {
-    d = describe(near);
-    if (near.type === 'chef') { const { question: q, chef } = stationState(near); if (q) bubble(near, q, chef); }
-  }
-  const html = d ? `<div class="row1">${d.eyebrow ? `<small>${esc(d.eyebrow)}</small>` : ''}<b>${esc(d.title || '')}</b></div>${d.sub ? `<p>${esc(String(d.sub).slice(0, 220))}</p>` : ''}${d.extra ? `<div class="facts">${d.extra}</div>` : ''}${d.keys ? `<div class="keys">${d.keys}</div>` : ''}` : idleCard();
-  const cls = `card ${d?.tone || ''} ${d?.wide ? 'wide' : ''} ${d ? '' : 'quiet'}`;
-  if (html !== cardHtml) { $('cardBody').innerHTML = html; cardHtml = html; }
-  if ($('card').className !== cls) $('card').className = cls;
-  if ($('qsheet').hidden === ui.sheet) { $('qsheet').hidden = !ui.sheet; document.body.classList.toggle('asking', ui.sheet); if (!ui.sheet) sheetHtml = ''; }
+  /* ---- the ticket rail ---- */
+  rail: {
+    sig: S => `${S.readyQueue.join()}|${Object.values(S.items).filter(i => ['cooking', 'waiting_stove', 'burnt'].includes(i.status)).map(i => i.id + i.status).join()}`,
+    render(el, S) {
+      const row = (it, word) => `<li class="fl-ticket st-${it.station}"><span class="fl-st on st-${it.station}">${esc(STATION_LABEL[it.station])}</span><p>${esc(it.prompt)}</p><small>${esc(word)}${it.redoCount ? ` · redo ${it.redoCount}: ${esc(it.redoReason || '')}` : ''}</small></li>`;
+      const busy = Object.values(S.items).filter(i => ['cooking', 'waiting_stove', 'burnt'].includes(i.status));
+      el.innerHTML = `<div class="fl-head"><small>Ticket rail · the Ready Queue</small><h2>${S.readyQueue.length} waiting for a Chef</h2></div>
+        <div class="fl-body"><p>Oldest first. A free Chef takes the next ticket automatically.</p>
+        <ol class="fl-list">${S.readyQueue.map((iid, n) => row(S.items[iid], n === 0 ? 'next up' : `${n + 1} in queue`)).join('') || '<li class="fl-empty">No tickets waiting.</li>'}</ol>
+        ${busy.length ? `<h3>With the Chefs</h3><ol class="fl-list">${busy.map(i => row(i, itemStatusWord[i.status])).join('')}</ol>` : ''}</div>`;
+    },
+  },
 
-  // the review panel closes itself when you walk off or the plate leaves the pass
-  if (ui.review) {
-    const o = orderOf(ui.review);
-    if (!o || o.state !== 'at_pass' || (!ui.reviewRemote && near?.type !== 'pass')) closeReview(); else syncReview(o);
-  }
-  if (!S) return;
-}
+  /* ---- a Station, and who cooks there ---- */
+  station: {
+    sig: (S, id) => S.chefs.map(c => `${c.status}${c.station}${c.thought}`).join() + S.readyQueue.join(),
+    render(el, S, id) {
+      const d = stationDef(id), chef = S.chefs.find(c => c.station === id && c.status !== 'idle');
+      const item = chef?.itemId ? S.items[chef.itemId] : null;
+      const waiting = S.readyQueue.map(i => S.items[i]).filter(i => i?.station === id);
+      el.innerHTML = `<div class="fl-head"><small>Station</small><h2><span class="fl-st on st-${id}">${esc(d.name)}</span></h2></div>
+        <div class="fl-body"><p>${esc(d.does)}</p><p class="fl-files"><b>File focus</b> ${(STATION_FILES[id] || []).map(f => `<code>${esc(f)}</code>`).join(' ')}</p>
+        ${chef ? `<div class="fl-summary"><b>Chef ${esc(chef.name)} · ${esc(chefWords(chef, S))}</b>${item ? `<p>${esc(item.prompt)}</p>${progress(item)}` : ''}${chef.thought ? `<small>${esc(chef.thought)}</small>` : ''}</div>` : '<p>Nobody is cooking here right now.</p>'}
+        ${waiting.length ? `<p>${waiting.length} ticket${waiting.length > 1 ? 's' : ''} for this Station on the rail.</p>` : ''}</div>`;
+    },
+  },
+  chef: {
+    sig: (S, id) => { const c = S.chefs.find(x => x.id === id); return `${c?.status}|${c?.itemId}|${c?.thought}`; },
+    render(el, S, id) {
+      const c = S.chefs.find(x => x.id === id); if (!c) { el.innerHTML = '<p>No such Chef.</p>'; return; }
+      const item = c.itemId ? S.items[c.itemId] : null;
+      el.innerHTML = `<div class="fl-head"><small>Chef · ${esc(c.modelLabel)}</small><h2>${esc(c.name)}</h2></div>
+        <div class="fl-body"><p class="fl-big">${esc(chefWords(c, S))}</p>${item ? `<div class="fl-summary"><b>${esc(STATION_LABEL[item.station])} ticket</b><p>${esc(item.prompt)}</p>${progress(item)}</div>` : '<p>Idle Chefs take the oldest ticket on the rail by themselves.</p>'}
+        ${c.status === 'waiting_stove' ? '<p class="fl-note">Waiting for a stove: the server is at its limit of model calls in flight. This time never counts against you.</p>' : ''}
+        ${c.thought ? `<p><i>${esc(c.thought)}</i></p>` : ''}</div>`;
+    },
+  },
 
-/* ======================= review, docked on the right while the kitchen keeps running ======================= */
-export async function openReview(id, { remote = false } = {}) {
-  const o = orderOf(id); if (!o) return;
-  if (ui.board) setBoard(false);
-  ui.review = id; ui.reviewRemote = remote; ui.cur = 0; ui.hunks = 0;
-  $('review').classList.add('open'); $('stage').classList.add('docked'); redock();
-  $('rEyebrow').textContent = `#${o.id} · cooked by ${chefName(o.chefId)} · round ${o.rounds + 1}`;
-  $('rTitle').textContent = o.title;
-  $('rSummary').textContent = o.summary || '(no summary)';
-  $('rComment').value = '';
-  $('rDiff').innerHTML = '<div class="file">Loading the diff…</div>';
-  $('rDiff').scrollTop = 0;
-  syncReview(o);
-  emit('sfx', 'open');
-  try {
-    const d = await getJson(kpath(`/api/orders/${id}/diff`));
-    if (ui.review !== id) return;
-    const { html, hunks } = renderDiff(d.patch);
-    $('rDiff').innerHTML = html; ui.hunks = hunks;
-    const key = seenKey(o);
-    if (!seen.has(key)) seen.set(key, { total: hunks, seen: new Set() });
-    seen.get(key).total = hunks;
-    setHunk(0, false); markSeen();
-  } catch { $('rDiff').innerHTML = '<div class="file">Could not load the diff.</div>'; }
-}
-/** The panel docks on the right, or as a sheet across the bottom on an upright phone; the kitchen fits into what is left. */
-export function redock() {
-  $('stage').classList.toggle('docked', !!ui.review || ui.board);
-  if (!ui.review && !ui.board) return setDock(0, 0);
-  const m = document.body.dataset.layout;
-  if (m === 'portrait') setDock(0, ui.board ? 0.66 : 0.6); else setDock(ui.board || m === 'landscape' ? 0.5 : 0.44, 0);
-}
-export function closeReview() {
-  if (!ui.review) return;
-  ui.review = null; ui.reviewRemote = false; $('review').classList.remove('open'); redock();
-  if (document.activeElement === $('rComment')) $('rComment').blur();
-}
-function syncReview(o) {
-  const look = plateLook(o), meta = [];
-  if (o.tests) meta.push(`<span class="chip2 ${o.tests.ok ? 'ok' : 'bad'}">tests ${o.tests.ok ? 'pass' : 'fail'} · ${(o.tests.ms / 1000).toFixed(1)}s</span>`);
-  if (o.diff?.stat) meta.push(`<span class="chip2">${o.diff.stat.files} files, +${o.diff.stat.added} −${o.diff.stat.removed}</span>`);
-  if (look.cold) meta.push(`<span class="chip2 cold">cold: conflicts with main in ${esc((o.merge.conflicts || []).join(', ') || 'some files')}</span>`);
-  else if (o.merge) meta.push('<span class="chip2 ok">merges clean</span>');
-  else if (o.behind) meta.push(`<span class="chip2 warn">${o.behind} behind ${esc(G.S.mainBranch)}</span>`);
-  if (o.refires) meta.push(`<span class="chip2 warn">re-fired ${o.refires}×</span>`);
-  if (o.feedback?.length) meta.push(`<span class="chip2">last note: “${esc(o.feedback.at(-1).comment.slice(0, 80))}”</span>`);
-  if (o.costUsd) meta.push(`<span class="chip2">$${o.costUsd.toFixed(2)}</span>`);
-  const html = meta.join('') + (G.S.overlaps || []).filter(([a, b]) => a === o.id || b === o.id).map(([a, b, f, cf]) => (cf || []).length ? `<span class="chip2 bad">conflicts with #${a === o.id ? b : a} in ${esc(cf.join(', '))}</span>` : `<span class="chip2 warn">shares ${esc((f || []).join(', '))} with #${a === o.id ? b : a}</span>`).join('');
-  if ($('rMeta').innerHTML !== html) $('rMeta').innerHTML = html;
-  const tests = o.tests?.output || 'No test run.';
-  if ($('rTests').textContent !== tests) { $('rTests').textContent = tests; $('rTestsBox').open = !!(o.tests && !o.tests.ok); $('rTestsLabel').textContent = o.tests ? `Test output (${o.tests.ok ? 'pass' : 'fail'})` : 'Tests'; }
-  const s = seen.get(seenKey(o)), n = s ? s.seen.size : 0, total = s?.total ?? 0;
-  $('rSeen').textContent = total ? `${n}/${total} hunks seen` : 'no hunks';
-  $('rSeen').classList.toggle('all', !total || n >= total);
-  $('rApprove').innerHTML = o.approved ? 'Approved' : `<kbd>Enter</kbd> ${look.burnt ? 'Approve anyway' : 'Approve'}${total && n < total ? '<span class="blind"> (blind)</span>' : ''}`;
-  $('rApprove').disabled = !!o.approved;
-  $('rCold').hidden = true;
-  $('rColdNote').hidden = !look.cold;
-  // a visiting teammate approves; sending back and binning are the owner's
-  for (const id of ['rBack', 'rBin', 'rComment']) if ($(id).hidden !== !!G.visit) $(id).hidden = !!G.visit;
-  $('rBack').textContent = look.cold ? 'Send back to merge main' : 'Send back';
-  const byTouch = document.body.classList.contains('touch');
-  $('rComment').placeholder = look.cold ? 'Cold plate: no note needed' : byTouch ? 'What to fix, then Send back' : 'B: write what to fix, then Enter sends it back';
-}
-function renderDiff(patch) {
-  if (!patch) return { html: '<div class="file">No changes. The chef did not change any files. Send it back with what you expected.</div>', hunks: 0 };
-  let html = '', hunks = 0, open = false;
-  for (const l of patch.split('\n')) {
-    if (l.startsWith('diff --git')) { if (open) { html += '</div>'; open = false; } html += `<div class="file">${esc(l.replace(/^diff --git a\/(.*) b\/.*/, '$1'))}</div>`; continue; }
-    if (/^(index |--- |\+\+\+ |new file|deleted file|similarity|rename |\\ No newline)/.test(l)) continue;
-    if (l.startsWith('@@')) { if (open) html += '</div>'; html += `<div class="hunk" data-h="${hunks++}"><div class="ln hh">${esc(l)}</div>`; open = true; continue; }
-    if (!open) continue;
-    html += `<div class="ln ${l.startsWith('+') ? 'add' : l.startsWith('-') ? 'del' : ''}">${esc(l) || ' '}</div>`;
-  }
-  if (open) html += '</div>';
-  return { html, hunks };
-}
-function markSeen(force = null) {
-  const o = orderOf(ui.review); if (!o) return;
-  const s = seen.get(seenKey(o)); if (!s) return;
-  const box = $('rDiff'), top = box.scrollTop, bottom = top + box.clientHeight;
-  for (const el of box.querySelectorAll('.hunk')) {
-    const i = Number(el.dataset.h);
-    if (i === force || (el.offsetTop >= top - 4 && el.offsetTop + el.offsetHeight <= bottom + 4)) { s.seen.add(i); el.classList.add('seen'); }
-  }
-}
-function setHunk(i, deliberate = true) {
-  const els = $('rDiff').querySelectorAll('.hunk'); if (!els.length) return;
-  // stepping on from a change counts as having read it, however little of it a small screen could show at once
-  if (deliberate && i !== ui.cur) markSeen(ui.cur);
-  ui.cur = Math.max(0, Math.min(els.length - 1, i));
-  els.forEach((el, k) => el.classList.toggle('cur', k === ui.cur));
-  const el = els[ui.cur];
-  $('rDiff').scrollTop = Math.max(0, el.offsetTop - 34);
-  markSeen(deliberate ? ui.cur : null);
-}
-$('rDiff').addEventListener('scroll', () => markSeen());
-// a sideways swipe across the diff is J or K
-let swipe = null;
-$('rDiff').addEventListener('touchstart', e => { const t = e.touches[0]; swipe = { x: t.clientX, y: t.clientY }; }, { passive: true });
-$('rDiff').addEventListener('touchend', e => {
-  if (!swipe) return;
-  const t = e.changedTouches[0], dx = t.clientX - swipe.x, dy = t.clientY - swipe.y; swipe = null;
-  if (Math.abs(dx) > 60 && Math.abs(dy) < 40) setHunk(ui.cur + (dx < 0 ? 1 : -1));
-}, { passive: true });
-export async function approve() {
-  const o = orderOf(ui.review); if (!o || o.approved) return;
-  try {
-    await api(kpath(`/api/orders/${o.id}/review`), { verdict: 'approve' });
-    emit('sfx', 'approve'); const seenIt = diffSeen(o);
-    closeReview();
-    // once the kitchen has slid back to full size, so the word lands on the plate
-    setTimeout(() => popup(seenIt ? 'Approved' : 'Approved blind', orderPos(o), seenIt ? 'good' : 'warn'), 450);
-  } catch { /* toasted */ }
-}
-export async function sendBack() {
-  const o = orderOf(ui.review); if (!o || G.visit) return;
-  const comment = $('rComment').value.trim();
-  // a cold plate needs no note: the chef just merges main
-  if (!comment && o.merge?.clean !== false) { toast('Write what the chef should fix', 'bad'); $('rComment').focus(); return; }
-  try { await api(`/api/orders/${o.id}/review`, { verdict: 'send_back', comment }); emit('sfx', 'back'); closeReview(); } catch { /* toasted */ }
-}
-/** Keys while the panel is open. Returns true when it used the key. */
-export function reviewKey(e) {
-  if (!ui.review) return false;
-  switch (e.code) {
-    case 'KeyJ': setHunk(ui.cur + 1); return true;
-    case 'KeyK': setHunk(ui.cur - 1); return true;
-    case 'Enter': approve(); return true;
-    case 'KeyB': if (!G.visit) $('rComment').focus(); return true;
-    case 'Escape': closeReview(); return true;
-  }
-  return false;
-}
-$('rComment').addEventListener('keydown', e => {
-  if (e.key === 'Escape') { e.stopPropagation(); $('rComment').blur(); }
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendBack(); }
-});
-$('rApprove').onclick = approve;
-$('rBack').onclick = sendBack;
-$('rClose').onclick = closeReview;
-$('rCold').onclick = sendBack;
-$('rBin').onclick = async () => {
-  if (G.visit) return;
-  if ($('rBin').dataset.arm !== '1') { $('rBin').dataset.arm = '1'; $('rBin').textContent = 'Really bin it?'; setTimeout(() => { $('rBin').dataset.arm = ''; $('rBin').textContent = 'Bin the order'; }, 3000); return; }
-  const id = ui.review; closeReview();
-  try { await api(`/api/orders/${id}/bin`); } catch { /* toasted */ }
+  /* ---- help: the keys, the loop, Close up ---- */
+  help: {
+    sig: S => `${S.shift.status}`,
+    render(el, S) {
+      el.innerHTML = `<div class="fl-head"><small>How to play</small><h2>Run the pass</h2></div>
+        <div class="fl-body"><ol class="fl-loop"><li><b>Seat</b> a Customer from the line on the left.</li><li><b>Split</b> their Order into Items at the table, one Station each.</li><li><b>Review</b> each Meal at the Pass, hunk by hunk. Approve or send it back.</li><li><b>Serve</b> the approved Meals with a note.</li><li><b>Ship</b> it with the Bill once the Customer is happy.</li></ol>
+        <p>When both Chefs are cooking you may <b>take a break</b>. You are called back after your grace period.</p>
+        <dl class="fl-keys"><dt>WASD / click</dt><dd>walk</dd><dt>E</dt><dd>use what is near</dd><dt>Shift</dt><dd>dash</dd><dt>Tab</dt><dd>the most urgent thing</dd><dt>T</dt><dd>Type it</dd><dt>J / K</dt><dd>next / previous hunk</dd><dt>P</dt><dd>presenter mode</dd><dt>Esc</dt><dd>close</dd></dl></div>
+        <div class="fl-foot"><div class="fl-row">${S.shift.status === 'running' ? actBtn('Close up for the day', 'closeShift', {}, 'bad') : ''}<button type="button" class="fl-btn ghost" data-sound>${isMuted() ? 'Sound on' : 'Sound off'}</button><button type="button" class="fl-btn ghost" data-presenter>Presenter mode <kbd>P</kbd></button></div></div>`;
+      el.querySelector('[data-presenter]').onclick = () => emit('presenter');
+      el.querySelector('[data-sound]').onclick = e => { setMuted(!isMuted()); e.currentTarget.textContent = isMuted() ? 'Sound on' : 'Sound off'; };
+    },
+  },
+
+  /* ---- the shift report ---- */
+  report: {
+    sig: S => JSON.stringify(S.shift.report),
+    render(el, S) {
+      const r = S.shift.report || {}; const st = S.stats || {};
+      el.innerHTML = `<div class="fl-head"><small>${esc(S.name)} · end of shift</small><h2>Shift report</h2></div>
+        <div class="fl-body"><p class="fl-verdict">${esc(r.verdict || 'Shift over.')}</p>
+        <div class="fl-stats">
+          <div><b>${r.shipped ?? st.shipped ?? 0}</b><small>Orders shipped</small></div><div><b>${r.points ?? S.score}</b><small>points</small></div>
+          <div><b>${Math.round((r.reworkRate || 0) * 100)}%</b><small>rework rate</small></div><div><b>${r.avgCallBackMs ? `${(r.avgCallBackMs / 1000).toFixed(1)} s` : '-'}</b><small>avg call-back response</small></div>
+          <div><b>${mmss(r.breakMs || 0)}</b><small>break time</small></div><div><b>${mmss(r.longestWorkMs || 0)}</b><small>longest work stretch</small></div>
+        </div></div>
+        <div class="fl-foot"><div class="fl-row">${actBtn('Play again', 'playAgain', {}, 'ok big')}${actBtn('Leave', 'leave', {}, 'ghost')}</div></div>`;
+    },
+  },
 };
 
-/* ======================= the board: this kitchen's orders, wired to this kitchen's API ======================= */
-const send = (path, body) => api(path, body).catch(() => { /* api already toasted */ });
-/** What a card on your own kitchen's board can do. The town's chalkboard draws the same board with the same actions. */
-export const boardActions = {
-  close: () => setBoard(false),
-  newOrder: () => $('newOrderBtn').click(),
-  shift: (start, mins) => send(start ? '/api/shift/start' : '/api/shift/stop', start ? mins : {}),
-  plan: o => send(`/api/orders/${o.id}/plan`),
-  assign: (o, chefId) => { emit('sfx', 'drop'); const ch = chefChar(chefId); if (ch) kick(ch, 0.35); return send(`/api/orders/${o.id}/assign`, { chefId }); },
-  resume: o => send(`/api/orders/${o.id}/resume`),
-  bin: o => { emit('sfx', 'back'); return send(`/api/orders/${o.id}/bin`); },
-  steer: (o, note) => api(`/api/orders/${o.id}/steer`, { note }).then(() => { emit('sfx', 'shout'); if (atHome()) popup('Heard, chef!', orderPos(o), 'good'); }, () => {}),
-  answer: (q, body) => { emit('sfx', body.allow ? 'yes' : 'no'); const ch = chefChar(q.chefId); if (ch) kick(ch, 0.4); return send(`/api/questions/${q.id}/answer`, body); },
-  review: o => (atHome() ? openReview(o.id, { remote: true }) : toast('A review happens at your own pass. Go home first')),
-  ship: o => send(`/api/orders/${o.id}/ship`, { seen: diffSeen(o) }),
-};
-export const board = createBoard($('board'), boardActions, { now: nowS });
-export function setBoard(open) {
-  if (open === ui.board) return;
-  if (open) closeReview();
-  ui.board = open;
-  $('board').classList.toggle('open', open);
-  $('boardBtn').setAttribute('aria-pressed', String(open));
-  redock();
-  if (open) { board.render(G.own || G.S); emit('sfx', 'open'); } else if ($('board').contains(document.activeElement)) document.activeElement.blur();
+function progress(item) {
+  if (!item?.cookStartedAt || !item.cookEndsAt) return '';
+  const f = Math.max(0, Math.min(1, (now() - item.cookStartedAt) / Math.max(1, item.cookEndsAt - item.cookStartedAt)));
+  return `<div class="fl-prog"><i style="--p:${Math.round(f * 100)}%"></i></div>`;
 }
-$('boardBtn').onclick = () => setBoard(!ui.board);
 
-/* ======================= shift report ======================= */
-let lastReport = '';
-/** The big line across the room when a plate reaches main. */
-let bannerFree = 0;
-export function banner(big, small = '', cls = '') {
-  fx.banners++;
-  // one at a time: a second banner waits for the first to finish instead of wiping it out
-  const wait = Math.max(0, bannerFree - performance.now());
-  bannerFree = performance.now() + wait + 2300;
-  setTimeout(() => {
-    const el = document.createElement('div'); el.className = `banner ${cls}`;
-    el.innerHTML = `<b>${esc(big)}</b>${small ? `<i>${esc(small)}</i>` : ''}`;
-    $('banners').replaceChildren(el);
-    setTimeout(() => el.remove(), 2500);
-  }, wait);
+/* ---------- the order pad: split the Order into Items ---------- */
+function draftsFromServer(S, c) { return orderItems(S, c).filter(i => i.status === 'draft').map(i => ({ id: i.id, prompt: i.prompt, station: i.station, quickPickId: i.quickPickId, typed: i.typed })); }
+function orderPad(el, S, c, t, st, drafts) {
+  const sig = drafts.map(d => d.id).join();
+  if (!st.drafts || (st.draftSig !== sig && !st.dirty)) { st.drafts = draftsFromServer(S, c); st.draftSig = sig; }
+  st.typedStation ||= 'backend';
+  const follow = (c.feedback?.suggestedFollowUps || []).map((f, i) => ({ id: `fu${c.feedbackRound}-${i}`, label: f.prompt, prompt: f.prompt, station: f.station }));
+  // the server may already have added the follow-ups to the Order's quick picks (followUp: true): each prompt once, follow-ups first
+  const seen = new Set(), picks = [];
+  for (const q of [...c.order.quickPicks.filter(q => q.followUp), ...(c.status === 'awaiting_player' || st.more ? follow : []), ...c.order.quickPicks.filter(q => !q.followUp)]) if (!seen.has(q.prompt)) { seen.add(q.prompt); picks.push(q); }
+  const sent = orderItems(S, c).filter(i => i.status !== 'draft');
+  el.innerHTML = `
+    <div class="fl-head"><small>Table ${t + 1} · ${esc(c.name)} · order pad</small><h2>${st.more ? 'More work' : 'Split the Order'}</h2></div>
+    <div class="fl-body fl-pad">
+      ${orderCard(c.order, { open: !sent.length && !st.more && !st.drafts.length })}
+      ${st.more && c.feedback ? `<p class="fl-quote">“${esc(c.feedback.comments)}”</p>` : ''}
+      <h3>Items <small>1 to ${LIMITS.items}, one Station each</small></h3>
+      ${itemEditor(st, picks, { canAct: F.you.canAct })}
+      ${sent.length ? `<h3>Already sent</h3><ol class="fl-list">${sent.map(i => `<li class="fl-ticket st-${i.station}"><span class="fl-st on st-${i.station}">${esc(STATION_LABEL[i.station])}</span><p>${esc(i.prompt)}</p><small>${esc(itemStatusWord[i.status])}</small></li>`).join('')}</ol>` : ''}
+    </div>
+    <div class="fl-foot"><div class="fl-row">${actBtn(`Send ${st.drafts.length || ''} to the kitchen`, null, null, 'ok big', null, 'send', !st.drafts.length)}</div></div>`;
+  const redraw = (why, full = true) => { st.dirty = true; if (full) openPanel(`table:${t}`, { force: true }); };
+  wireEditor(el, st, picks, redraw);
+  st.__typeit = () => toggleTyping(st, redraw);
+  st.__addTyped = () => addTyped(st, redraw);
+  wireActs(el, { send: () => sendItems(c, st, t) });
 }
-function countUp(el, to, ms = 900) {
-  const t0 = performance.now(), sign = to > 0 ? '+' : '';
-  const tick = () => { const f = Math.min(1, (performance.now() - t0) / ms), e = 1 - (1 - f) ** 3; el.textContent = `${sign}${Math.round(to * e)}`; if (f < 1) requestAnimationFrame(tick); };
-  tick();
+async function saveDrafts(c, st) {
+  const items = st.drafts.map(d => ({ ...(d.id ? { id: d.id } : {}), prompt: d.prompt.trim().slice(0, LIMITS.prompt), station: d.station, ...(d.quickPickId ? { quickPickId: d.quickPickId } : {}), typed: !!(d.typed || d.edited) }));
+  if (!items.length) return { ok: true };
+  if (items.some(i => !i.prompt)) { toast(CODES.empty, 'bad'); return { ok: false, code: 'empty' }; }
+  const r = await doAct('saveItems', { customerId: c.id, items });
+  if (r.ok) st.dirty = false;
+  return r;
 }
-export function maybeReport() {
-  const S = G.own || G.S, sh = S.shift;
-  // keyed on when the shift started, so a kitchen that is reset and plays "shift 1" again still gets its report
-  const key = sh.report ? `${sh.report.shift}:${sh.startedAt}` : '';
-  if (sh.mode !== 'break' || !sh.report || key === lastReport) return;
-  lastReport = key;
-  const r = sh.report;
-  const stars = r.stars ?? (r.shipped >= 2 && !r.burntShipped && r.blockedMs < escalation().fireMs ? 3 : r.shipped >= 1 ? 2 : 1);
-  const advice = r.advice ?? (r.blockedMs > escalation().fireMs ? `Your chefs waited ${mmss(r.blockedMs)} on you. Prep big tickets and shake a jar on them so they ask less.`
-    : r.burntShipped ? 'A burnt plate went out. Flip the oven lever so failing plates re-fire on their own.'
-    : r.sentBack > 1 ? 'Several plates went back. Prep tickets first, and call out early when a chef drifts.'
-    : r.shipped ? 'Clean shift. Run more chefs at once next time.' : 'Nothing shipped. Hand out small tickets first to get the line moving.');
-  const arc = arcade(), main = S.mainBranch || 'main';
-  $('repKicker').textContent = `Shift ${r.shift} is over`;
-  $('repTitle').textContent = ['', 'Rough service', 'Good service', 'Clean service!'][stars] || 'Shift report';
-  $('repStars').innerHTML = [1, 2, 3].map(i => `<span class="${i <= stars ? 'on' : ''}" style="--i:${i}">${ICON.star}</span>`).join('');
-  $('repStars').setAttribute('aria-label', `${stars} of 3 stars`);
-  $('repLine').textContent = r.shipped ? `${r.shipped} change${r.shipped === 1 ? '' : 's'} merged into ${main}, ${r.firstTime} of them right first time.` : `Nothing reached ${main} this shift.`;
-  $('repAdvice').innerHTML = `<b>Next time</b>${esc(advice)}`;
-  const stat = (v, l, cls = '') => `<div class="stat ${cls}"><b>${v}</b><small>${l}</small></div>`;
-  $('repBody').innerHTML = [
-    stat('0', 'points', 'pts'), stat(r.shipped, 'shipped', r.shipped ? 'good' : ''), stat(r.firstTime, 'right first time', r.firstTime ? 'good' : ''),
-    stat(mmss(r.blockedMs), 'chefs kept waiting', r.blockedPenalty > 10 ? 'bad' : ''), stat(r.sentBack, 'sent back'), stat(r.conflicts, 'spoiled', r.conflicts ? 'bad' : ''),
-  ].join('');
-  $('repFoot').textContent = [`${r.blindShips ?? 0} blind ship${r.blindShips === 1 ? '' : 's'}`, `${r.steers ?? 0} call-out${r.steers === 1 ? '' : 's'}`, `${r.refires ?? 0} re-fire${r.refires === 1 ? '' : 's'}`, `$${(r.costUsd || 0).toFixed(2)} spent`].join(' · ');
-  $('repAgain').hidden = !arc;
-  $('repClose').textContent = arc ? 'Keep cooking' : 'Run the pass';
-  $('repClose').className = arc ? 'btn ghost' : 'btn';
-  $('reportDialog').showModal();
-  (arc ? $('repAgain') : $('repClose')).focus();
-  countUp($('repBody').querySelector('.pts b'), r.score);
-  emit('report', stars);
+async function sendItems(c, st, t) {
+  if (!st.drafts.length) { toast(CODES.no_items, 'bad'); return; }
+  const r = await saveDrafts(c, st); if (!r.ok) return;
+  const s = await doAct('sendItems', { customerId: c.id });
+  if (s.ok) { st.drafts = []; st.dirty = false; st.more = false; st.typing = false; emit('sfx', 'clink'); toast('Order in! Tickets are on the rail.', ''); closePanel(); }
 }
-$('repClose').onclick = () => $('reportDialog').close();
-$('repAgain').onclick = () => { $('reportDialog').close(); emit('again'); };
+function saveDraftsOnClose(key) {
+  const st = P.states.get(key); if (!st?.dirty || !key.startsWith('table:') || !F.you.canAct) return;
+  const c = F.snap?.tables[+key.slice(6)]; if (c && st.drafts?.length) saveDrafts(c, st);
+}
+/** T and Enter in the order pad, for the keys. */
+export function typeItKey() { const st = P.key?.startsWith('table:') ? P.states.get(P.key) : null; if (st?.__typeit) { st.__typeit(); return true; } return false; }
+
+/* ---------- the tray: what is cooking, and Serve ---------- */
+function tray(el, S, c, t, st, items) {
+  const approved = items.filter(i => i.status === 'approved');
+  const eating = c.status === 'eating';
+  el.innerHTML = `
+    <div class="fl-head"><small>Table ${t + 1} · ${esc(c.name)}</small><h2>${eating ? 'Tasting your work…' : approved.length ? 'Ready to serve' : 'Waiting for food'}</h2></div>
+    <div class="fl-body">
+      ${orderCard(c.order, { open: false })}
+      <ol class="fl-list">${items.map(i => `<li class="fl-ticket st-${i.station} is-${i.status}"><span class="fl-st on st-${i.station}">${esc(STATION_LABEL[i.station])}</span><p>${esc(i.prompt)}</p><small>${esc(itemStatusWord[i.status])}${i.status === 'ready' || i.status === 'sampled' ? ' · sample it at the Pass' : ''}</small>${i.mealId && ['ready', 'sampled', 'approved'].includes(i.status) ? `<button type="button" class="fl-btn ghost sm" data-goto-panel="meal:${i.mealId}">Open</button>` : ''}</li>`).join('')}</ol>
+      ${eating ? `<p>${esc(c.name)} is checking the work against the Order. Feedback comes next.</p>` : ''}
+      ${approved.length && !eating ? `<h3>Serve ${approved.length} approved Meal${approved.length > 1 ? 's' : ''}</h3><p>Add a note for the reviewer (optional).</p>${textStep(S.chips?.serve || [], st.note, { keep: 'note', placeholder: 'A note for the Customer', max: LIMITS.note, name: 'note' })}` : ''}
+    </div>
+    ${approved.length && !eating ? `<div class="fl-foot"><div class="fl-row">${actBtn(`Serve ${approved.length} to ${esc(c.name.split(' ')[0])}`, null, null, 'ok big', null, 'serve')}${items.some(i => ['queued', 'cooking', 'ready', 'sampled', 'waiting_stove'].includes(i.status)) ? '<small>Other Items are still in the kitchen. You can serve now and the rest later.</small>' : ''}</div></div>` : ''}`;
+  wireTextStep(el, S.chips?.serve || [], st, 'note', 'note');
+  wireActs(el, {
+    serve: async () => {
+      const r = await doAct('serveOrder', { customerId: c.id, note: String(st.note || '').trim().slice(0, LIMITS.note) });
+      if (r.ok) { st.note = ''; emit('sfx', 'drop'); toast(`Served! ${c.name.split(' ')[0]} is tasting.`, ''); }
+    },
+  });
+}
+
+/* ---------- the comment card: Feedback ---------- */
+function feedbackCard(el, S, c, t, st) {
+  const fb = c.feedback;
+  if (!fb) { el.innerHTML = `<div class="fl-head"><h2>${esc(c.name)}</h2></div><p>Thinking…</p>`; return; }
+  if (!c.feedbackRead && F.you.canAct && st.readFor !== c.feedbackRound) { st.readFor = c.feedbackRound; doAct('readFeedback', { customerId: c.id }, { quiet: true }); }
+  el.innerHTML = `
+    <div class="fl-head"><small>Table ${t + 1} · round ${c.feedbackRound || 1} · comment card</small><h2>${esc(c.name)}</h2></div>
+    <div class="fl-body">
+      <div class="fl-comment ${fb.satisfied ? 'good' : 'bad'}">
+        <div class="fl-stars big" aria-label="${fb.score} of 5">${[1, 2, 3, 4, 5].map(n => `<i class="${n <= fb.score ? 'on' : ''}">★</i>`).join('')}</div>
+        <b class="fl-verdict">${fb.satisfied ? 'Satisfied' : 'More work needed'}</b>
+        <p>“${esc(fb.comments)}”</p>
+        ${fb.suggestedFollowUps?.length ? `<h3>Suggested follow-ups</h3><ul>${fb.suggestedFollowUps.map(f => `<li><span class="fl-st on st-${f.station}">${esc(STATION_LABEL[f.station])}</span> ${esc(f.prompt)}</li>`).join('')}</ul>` : ''}
+      </div>
+      ${patienceBar(c.patience, `${c.name.split(' ')[0]} is waiting on you`)}
+    </div>
+    <div class="fl-foot"><div class="fl-row">${actBtn('More work', null, null, fb.satisfied ? 'ghost' : 'ok', null, 'more')}${actBtn('Bring the bill', null, null, fb.satisfied ? 'ok big' : 'ghost', null, 'bill')}</div></div>`;
+  wireActs(el, {
+    more: async () => { const r = await doAct('moreWork', { customerId: c.id }); if (r.ok) { st.more = true; st.drafts = null; openPanel(`table:${t}`, { force: true }); } },
+    bill: async () => { const r = await doAct('giveBill', { customerId: c.id }); if (r.ok) emit('sfx', 'coin'); },
+  });
+}
+
+/* ---------- the receipt ---------- */
+function receipt(el, { c }, t, S) {
+  const r = c.receipt || {};
+  el.innerHTML = `<div class="fl-head"><small>Table ${t + 1}</small><h2>The Bill</h2></div>
+    <div class="fl-body"><div class="fl-receipt">
+      <h3>${esc(S.name)}</h3><p>#${c.order.number} ${esc(c.order.title)}<br><small>${esc(c.order.source)} · ${esc(c.name)}</small></p>
+      <dl><dt>Items</dt><dd>${r.items ?? c.order.itemIds.length}</dd><dt>Redos</dt><dd>${r.redos ?? 0}</dd><dt>Time taken</dt><dd>${mmss(r.tookMs || 0)}</dd><dt>Customer score</dt><dd>${r.score ?? '-'} / 5</dd></dl>
+      <p class="fl-total"><span>Points</span><b>+${r.points ?? 0}</b></p>
+      <div class="fl-stamp" aria-label="Shipped">SHIPPED</div>
+    </div></div>
+    <div class="fl-foot"><div class="fl-row">${S.tables[t] ? '' : '<span>The table is free again.</span>'}${S.line.length && !S.tables[t] && F.you.canAct ? actBtn(`Seat ${esc(S.line[0].name)}`, null, null, 'ok', null, 'seatNext') : ''}</div></div>`;
+  wireActs(el, { seatNext: async () => { panelState().receipt = null; await doAct('seat', { customerId: S.line[0].id, table: t }); } });
+}
+
+export const panelStats = () => ({ key: P.key, opened: P.opened, lastOpenMs: P.lastOpenMs });

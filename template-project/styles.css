@@ -1,0 +1,18 @@
+/* Rosterette: a plain light theme. */
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1f2933; background: #f7f8fa; }
+.top { padding: 18px 24px 8px; }
+.top h1 { margin: 0; font-size: 26px; color: #2b5d9b; }
+.week { margin: 2px 0 0; color: #616e7c; }
+main { padding: 8px 24px; overflow-x: auto; }
+.roster { border-collapse: collapse; width: 100%; background: #fff; border: 1px solid #d9dee5; }
+.roster th, .roster td { border: 1px solid #d9dee5; padding: 8px 10px; text-align: left; font-size: 14px; }
+.roster thead th { background: #eef2f7; font-weight: 600; }
+.roster tbody th { font-weight: 600; white-space: nowrap; }
+.roster td.shift { background: #e6f0fb; color: #1e4f8a; }
+.checks { margin: 16px 24px 24px; padding: 12px 16px; background: #fff; border: 1px solid #d9dee5; border-radius: 6px; }
+.checks h2 { margin: 0 0 6px; font-size: 15px; }
+.checks ul { list-style: none; margin: 0; padding: 0; }
+.checks li { padding: 3px 0; }
+.checks li.pass::before { content: "\2714  "; color: #1f9d55; font-weight: 700; }
+.checks li.fail::before { content: "\2718  "; color: #c53030; font-weight: 700; }

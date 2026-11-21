@@ -1,86 +1,46 @@
-// Phones and tablets: which layout the screen gets, the thumb stick's picture, the on-screen buttons, and the gestures
-// a browser would otherwise steal (pinch, double-tap zoom, pull-to-refresh). The stick itself is read in input.js.
-import { $, on } from './core.js';
-import { setLayout } from './scene.js';
-import { player, setSide } from './world.js';
-import { press, stick } from './input.js';
-import { redock } from './panels.js';
+// Phones: which layout the screen gets, the camera that follows the Waiter on an upright phone (FR-12), pinch to zoom
+// out, and the gestures a browser would otherwise steal (pinch-zoom of the page, pull-to-refresh, double-tap zoom).
+import { setLayout, setScene, setZoom, getZoom, stage } from './scene.js';
+import { FOLLOW } from './floor.js';
+import { hudBottom } from './hud.js';
+import { dock } from './panels.js';
 
-export const touch = { on: false, layout: 'desk' };
+export const touch = { on: false, layout: 'desk', pinch: null, pinched: 0 };
+let off = [];
 
-/* ---------- layout: desk, a phone on its side (landscape), or a phone held upright (portrait) ---------- */
+/** desk, landscape (a phone on its side) or portrait (a phone held upright). */
 export function layout() {
   const w = innerWidth, h = innerHeight;
   const m = w < 720 && h > w ? 'portrait' : h < 540 ? 'landscape' : 'desk';
+  const changed = touch.layout !== m;
   touch.layout = m;
   document.body.dataset.layout = m;
   document.body.classList.toggle('narrow', m !== 'desk');
-  if (m === 'desk') $('tools').classList.remove('open');
-  // measured, because the walkthrough's steps add a second row to the HUD on an upright phone
-  const hud = Math.round(document.querySelector('.hud').getBoundingClientRect().bottom);
-  document.documentElement.style.setProperty('--hud-b', `${hud}px`);      // the visiting banner hangs just under the HUD
-  setSide(m === 'portrait');
-  setLayout({
-    side: m === 'portrait',
-    pad: m === 'portrait' ? { l: 2, r: 2, t: hud + 2, b: 78 } : m === 'landscape' ? { l: 6, r: 6, t: hud - 6, b: 4 } : { l: 10, r: 10, t: null, b: 8 },
-  });
-  redock();
+  const top = hudBottom();
+  if (m === 'portrait') { if (changed || !touch.following) setScene('kitchen', { follow: FOLLOW }); touch.following = true; }
+  else if (touch.following || changed) { setScene('kitchen'); touch.following = false; }
+  setLayout({ side: false, pad: m === 'portrait' ? { l: 2, r: 2, t: top + 4, b: 64 } : m === 'landscape' ? { l: 6, r: 6, t: top + 2, b: 4 } : { l: 10, r: 10, t: top + 6, b: 70 } });
+  dock();
 }
-addEventListener('resize', layout);
-addEventListener('orientationchange', () => setTimeout(layout, 250));
-on('layout', layout);
 
-function enable() {
-  if (touch.on) return;
-  touch.on = true;
-  document.body.classList.add('touch');
+export function initTouch() {
+  touch.following = false; touch.layout = '';
+  const add = (t, ev, fn, o) => { t.addEventListener(ev, fn, o); off.push(() => t.removeEventListener(ev, fn, o)); };
+  add(window, 'resize', layout);
+  add(window, 'orientationchange', () => setTimeout(layout, 250));
+  const enable = () => { touch.on = true; document.body.classList.add('touch'); };
+  if (matchMedia('(pointer: coarse)').matches) enable();
+  add(window, 'touchstart', enable, { passive: true });
+  for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) add(document, ev, e => e.preventDefault());
+  // two fingers on the floor pinch the camera out (only while it follows the Waiter); one finger never scrolls the page
+  const dist = e => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+  add(stage, 'touchstart', e => { if (e.touches.length === 2) touch.pinch = { d: dist(e), z: getZoom() }; }, { passive: true });
+  add(stage, 'touchmove', e => {
+    if (e.target.tagName === 'CANVAS' || e.touches.length > 1) e.preventDefault();
+    if (e.touches.length === 2 && touch.pinch) { setZoom(touch.pinch.z * touch.pinch.d / Math.max(20, dist(e))); touch.pinched = performance.now(); }
+  }, { passive: false });
+  add(stage, 'touchend', e => { if (e.touches.length < 2) touch.pinch = null; }, { passive: true });
+  add(stage, 'contextmenu', e => { if (touch.on) e.preventDefault(); });
   layout();
 }
-if (matchMedia('(pointer: coarse)').matches) enable();
-setTimeout(() => $('stickHint').classList.add('gone'), 12000);
-addEventListener('touchstart', enable, { once: true, passive: true });
-
-/* ---------- the buttons: pressed on touch-down, so a thumb on the stick and a thumb on USE work together ---------- */
-for (const b of document.querySelectorAll('.pad [data-tk]')) {
-  b.addEventListener('pointerdown', e => {
-    e.preventDefault();
-    b.classList.add('down'); setTimeout(() => b.classList.remove('down'), 140);
-    press(b.dataset.tk);
-  });
-  b.addEventListener('contextmenu', e => e.preventDefault());
-}
-$('menuBtn').onclick = () => { const open = $('tools').classList.toggle('open'); $('menuBtn').setAttribute('aria-expanded', String(open)); };
-$('tools').addEventListener('click', () => $('tools').classList.remove('open'));
-document.addEventListener('pointerdown', e => { if (!e.target.closest('#tools, #menuBtn')) $('tools').classList.remove('open'); });
-
-/* ---------- gestures the page keeps for itself ---------- */
-for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(ev, e => e.preventDefault());
-// two fingers on the kitchen are a stick and a tap, never a pinch; a drag down from the top is a walk, never a refresh
-$('stage').addEventListener('touchmove', e => { if (e.target.tagName === 'CANVAS' || e.touches.length > 1) e.preventDefault(); }, { passive: false });
-// double-tap zoom is turned off in the stylesheet (touch-action), which leaves fast repeated taps on a button alone
-$('stage').addEventListener('contextmenu', e => { if (touch.on) e.preventDefault(); });
-
-/* ---------- every frame: where the stick is drawn, and which buttons mean something right now ---------- */
-let seenT = 0, hintGone = false;
-export function touchFrame() {
-  const on = stick.id !== null;
-  if ($('thumb').hidden === on) $('thumb').hidden = !on;
-  if (on) {
-    $('thumb').style.transform = `translate(${Math.round(stick.ox)}px,${Math.round(stick.oy)}px)`;
-    $('thumbKnob').style.transform = `translate(${Math.round(stick.kx)}px,${Math.round(stick.ky)}px)`;
-    if (!hintGone) { hintGone = true; $('stickHint').classList.add('gone'); }
-  }
-  if (!touch.on || performance.now() - seenT < 120) return;
-  seenT = performance.now();
-  // the focus card already knows what each key would do here; the buttons follow it
-  const hint = k => document.querySelector(`#cardBody [data-k="${k}"]`);
-  const use = $('card').classList.contains('quiet') ? null : hint('E');
-  const text = use ? use.textContent.replace(/^E/, '').trim() : '';
-  if ($('tActHint').textContent !== text) $('tActHint').textContent = text;
-  $('tAct').classList.toggle('idle', !use);
-  $('tAct').classList.toggle('want', !!document.querySelector('.gd.near'));
-  const drop = !!player.carry, call = !!hint('F');
-  if ($('tDrop').hidden === drop) $('tDrop').hidden = !drop;
-  if ($('tCall').hidden === call) $('tCall').hidden = !call;
-}
-layout();
+export function disposeTouch() { for (const f of off) f(); off = []; setZoom(1); touch.following = false; }

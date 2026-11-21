@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ticket View</title>
+<style>
+  :root { --bg: #fbfaf7; --ink: #1d1b22; --muted: #6b6775; --line: #dedbe4; --card: #ffffff; --accent: #5b3fd1; --good: #1f8a4c; --bad: #c23b3b; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16141b; --ink: #eeecf2; --muted: #a29eac; --line: #34313d; --card: #201d27; --accent: #a993ff; --good: #5fd08e; --bad: #ff7a7a; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 4px; } h2 { font-size: 14px; margin: 0 0 6px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .note { color: var(--muted); margin: 0 0 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 12px; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px; min-width: 0; }
+  button { font: inherit; min-height: 32px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .row { padding: 6px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; } .row:first-of-type { border-top: 0; }
+  .tag { display: inline-block; font-size: 12px; padding: 0 6px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); }
+  .good { color: var(--good); } .bad { color: var(--bad); }
+  pre { white-space: pre-wrap; font-size: 12px; margin: 4px 0; max-height: 160px; overflow: auto; }
+  #log { font-size: 12px; color: var(--muted); max-height: 140px; overflow: auto; }
+</style>
+</head>
+<body>
+<h1>Ticket view</h1>
+<p class="note">The same server state as the 3D floor, as plain lists (NFR-10). Debug only.</p>
+<div class="bar" id="top"></div>
+<div class="grid" id="state"></div>
+<section style="margin-top:12px"><h2>Log</h2><div id="log"></div></section>
+<script type="module" src="/ticket.js"></script>
+</body>
+</html>

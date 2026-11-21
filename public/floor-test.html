@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Ship Shift: floor harness</title>
+<link rel="stylesheet" href="/game.css">
+<script type="importmap">{ "imports": { "three": "/vendor/three.module.js", "three/addons/": "/vendor/addons/" } }</script>
+<style>
+  .harness-pill { background: var(--paper); border: 3px solid var(--line); border-radius: 999px; padding: 8px 12px; font: 700 13px/1 var(--body); box-shadow: var(--hard); white-space: nowrap; }
+</style>
+</head>
+<body class="game">
+<!-- The restaurant on its own, fed canned snapshots from shared/fixtures.js. No server, no socket.
+     ?stage=start|seated|...  &canAct=0  &mode=live  &kind=showcase  &role=judge  &auto=1 (actions step the fixture) -->
+<div class="stage" id="stage">
+  <div class="vignette"></div>
+  <div class="labels" id="labels"></div>
+  <div class="pops" id="pops"></div>
+  <div class="banners" id="banners" aria-live="polite"></div>
+  <div id="floorUi"></div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+</div>
+<script type="module">
+import { fixtureFloorMessage, FIXTURE_STAGES } from '/shared/fixtures.js';
+import * as app from '/game/floorapp.js';
+import { THREE } from '/game/scene.js';
+
+const q = new URLSearchParams(location.search);
+const opts = { canAct: q.get('canAct') !== '0', mode: q.get('mode') || 'demo', kind: q.get('kind') || 'audience', ownerRole: q.get('role') || 'player' };
+const acts = [], poses = [];
+const NEXT = { seat: 'seated', saveItems: 'drafts', sendItems: 'cooking', approveMeal: 'approved', serveOrder: 'eating', moreWork: 'feedbackBad', giveBill: 'paying', startBreak: 'break', endBreak: 'ready' };
+const pill = document.createElement('div'); pill.className = 'harness-pill'; pill.textContent = opts.mode === 'live' ? 'LIVE · Haiku 5.5 · $0.04 of $0.10' : 'DEMO · pre-cooked';
+const ctx = {
+  async act(name, args) {
+    acts.push({ name, args, at: performance.now() });
+    const ref = window.__harness.refuse[name];
+    if (ref) return { ok: false, code: ref };
+    if (q.get('auto') === '1' && NEXT[name]) setTimeout(() => setStage(NEXT[name]), 30);
+    if (q.get('auto') === '1' && name === 'serveOrder') setTimeout(() => setStage('feedback'), 900);
+    if (q.get('auto') === '1' && name === 'giveBill') setTimeout(() => setStage('shipped'), 3000);
+    return { ok: true };
+  },
+  sendPos(x, z, r) { poses.push([x, z, r]); return true; },
+  openDoor() { window.__harness.door++; }, openMenu() { window.__harness.menu++; }, goHome() {},
+  pillSlot: pill, ui: document.getElementById('floorUi'),
+};
+let stage = q.get('stage') || 'start';
+function setStage(s, extra = {}) { stage = s; const msg = fixtureFloorMessage(s, { ...opts, ...extra }); window.__harness.msg = msg; app.updateFloor(msg); }
+window.__harness = { acts, poses, door: 0, menu: 0, refuse: {}, stages: FIXTURE_STAGES, setStage, app, stage: () => stage, mount() { app.mountFloor(ctx); setStage(stage); }, unmount() { app.unmountFloor(); } };
+app.mountFloor(ctx);
+setStage(stage);
+const clock = new THREE.Clock();
+(function frame() { requestAnimationFrame(frame); const dt = Math.min(0.1, clock.getDelta()); app.floorFrame(dt, clock.elapsedTime); })();
+window.__harness.ready = true;
+</script>
+</body>
+</html>

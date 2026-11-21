@@ -2,14 +2,11 @@
 .gitignore
 node_modules
 **/node_modules
-.kitchen
-demo-repo
 docs
 test
+tools
+server/showcase
 Dockerfile
 .dockerignore
 render.yaml
-fly.toml
-cloudflared
-cloudflared.exe
 *.log

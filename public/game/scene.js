@@ -7,6 +7,8 @@ import { $, fx, reduceMotion, clamp } from './core.js';
 export { THREE };
 export const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 export const stage = $('stage');
+/** The shell's page may not carry the hosts the labels and popups hang in: they are made here if missing. */
+function hostFor(id, cls) { let el = $(id); if (!el) { el = document.createElement('div'); el.id = id; el.className = cls; stage.append(el); } return el; }
 
 // Sharp enough on a retina laptop without drawing four times the pixels: the ratio is capped, and adapt() lowers it when frames run slow.
 const params = new URLSearchParams(location.search);
@@ -129,7 +131,7 @@ for (const x of [-7.75, 7.6]) for (const [y, z] of [[0, -4.9], [2.55, -4.9], [0,
 for (const z of [-5.3, 3.9]) for (const [x, y] of [[-6.9, 0], [6.4, 0], [6.4, 2.1], [7.6, 1.3]]) FITS.side.push(V(x, y, z));
 // follow: { x0, x1, z0, z1 } while the camera follows the player across a place bigger than the screen (the park), else null.
 // wide: the whole of that place at once.
-const view = { dist: 24, sx: 0, sy: 0, tDist: 24, tsx: 0, tsy: 0, dock: 0, dockB: 0, shake: 0, shakeAmp: 0, snap: true, calm: false, top: 58, side: false, follow: null, wide: false, spanX: 16, spanZ: 9, pad: { l: 10, r: 10, t: null, b: 8 } };
+const view = { dist: 24, sx: 0, sy: 0, tDist: 24, tsx: 0, tsy: 0, dock: 0, dockB: 0, shake: 0, shakeAmp: 0, snap: true, calm: false, top: 58, side: false, follow: null, wide: false, zoom: 1, spanX: 16, spanZ: 9, pad: { l: 10, r: 10, t: null, b: 8 } };
 const topOf = () => view.pad.t ?? view.top;
 /** The street-end camera is for the kitchen on an upright phone. A followed place is always seen from the front. */
 export const isSide = () => view.side && !view.follow;
@@ -152,8 +154,8 @@ function solveFit() {
   camera.clearViewOffset(); camera.aspect = w / h; camera.updateProjectionMatrix();
   if (f && !view.wide) {
     // about 16 units of ground across a wide screen, about 10 across an upright phone, and the player in the middle of the free part
-    const tanH = Math.tan(camera.fov * Math.PI / 360), across = w >= h ? 16 : 10;
-    view.tDist = clamp(across / (2 * tanH * (w / h)), 15, 40);
+    const tanH = Math.tan(camera.fov * Math.PI / 360), across = (w >= h ? 16 : 9.2) * view.zoom;
+    view.tDist = clamp(across / (2 * tanH * (w / h)), 12, 70);
     view.spanX = 2 * view.tDist * tanH * (w / h); view.spanZ = 2 * view.tDist * tanH / FOLLOW_SIN;
     view.tsx = w / 2 - (free.l + free.r) / 2; view.tsy = h / 2 - (free.t + free.b) / 2;
     return;
@@ -238,6 +240,10 @@ export const sceneName = () => Object.keys(scenes).find(k => scenes[k] === activ
 /** The whole followed place at once, or back to following. */
 export function setOverview(on) { if (!view.follow || view.wide === !!on) return; view.wide = !!on; solveFit(); }
 export const isOverview = () => view.wide;
+/** Pinch: 1 is the close view that follows the Waiter, larger shows more of the floor. Only a followed place zooms. */
+export function setZoom(z) { const v = clamp(z, 0.8, 2.1); if (v === view.zoom) return; view.zoom = v; if (view.follow) solveFit(); }
+export const getZoom = () => view.zoom;
+export const isFollowing = () => !!view.follow;
 // the outline effect draws the scene twice, so the count is kept for the whole frame (nextFrame resets it), not for the last pass
 renderer.info.autoReset = false;
 export function render() { if (quality.lost) return; if (quality.outline) effect.render(active, camera); else renderer.render(active, camera); }
@@ -271,6 +277,8 @@ export function toScreen(pos, out = {}) {
 
 /* ---------- particles ---------- */
 const parts = [];
+/** Removes every particle at once: the scene they were in is going away. */
+export function clearParticles() { for (const p of parts) { scene.remove(p.m); p.m.material.dispose(); } parts.length = 0; }
 const pGeo = { puff: new THREE.SphereGeometry(0.09, 8, 6), bit: new THREE.BoxGeometry(0.09, 0.025, 0.06), flame: new THREE.ConeGeometry(0.11, 0.3, 7), star: new THREE.OctahedronGeometry(0.07) };
 export function spawn(kind, pos, color, { n = 1, spread = 0.15, up = 0.9, out = 0.3, life = 1.2, size = 1, grow = 0.6, gravity = 0, opacity = 0.85 } = {}) {
   if (reduceMotion) n = Math.min(n, 2);
@@ -298,7 +306,7 @@ export function stepParticles(dt) {
 }
 
 /* ---------- HTML labels pinned to 3D points; lower priority ones give way instead of overlapping ---------- */
-const host = $('labels');
+const host = hostFor('labels', 'labels');
 const labels = new Map();
 let frameNo = 0;
 export const nextFrame = () => { renderer.info.reset(); return ++frameNo; };
@@ -312,6 +320,8 @@ export function label(key, html, pos, { cls = '', pri = 1, click = null, anchor 
   if (click) L.el.dataset.goto = click; else delete L.el.dataset.goto;
   L.pos.copy(pos); L.seen = frameNo; L.pri = pri; L.anchor = anchor;
 }
+/** Removes every label at once (a scene is being unmounted). */
+export function clearLabels() { for (const L of labels.values()) L.el.remove(); labels.clear(); popHost.replaceChildren(); }
 const scr = {};
 export function placeLabels() {
   const w = stage.clientWidth, h = stage.clientHeight, taken = [];
@@ -325,6 +335,8 @@ export function placeLabels() {
   const hits = r => taken.some(t => r.x < t.x + t.w + 3 && t.x < r.x + r.w + 3 && r.y < t.y + t.h + 3 && t.y < r.y + r.h + 3);
   for (const L of live) {
     toScreen(L.pos, scr);
+    // a thing off the side of the screen (the camera follows the Waiter on a phone) has no label piled at the edge
+    if (scr.x < -30 || scr.x > w + 30 || scr.y > h + 30) { L.el.classList.add('hid'); continue; }
     const ax = L.anchor === 'tl' ? scr.x : L.anchor === 'tr' ? scr.x - L.w : scr.x - L.w / 2, ay = L.anchor === 'bottom' ? scr.y - L.h : scr.y;
     const top = topOf();
     const right = w * (1 - view.dock) - 6, low = h * (1 - view.dockB) - 6;
@@ -343,7 +355,7 @@ export function placeLabels() {
 }
 
 /* ---------- floating score text ---------- */
-const popHost = $('pops');
+const popHost = hostFor('pops', 'pops');
 let popSlot = 0, popSlotT = 0;
 export function popup(text, pos, cls = '') {
   fx.popups++;
@@ -358,3 +370,24 @@ export function popup(text, pos, cls = '') {
   popHost.append(el);
   setTimeout(() => el.remove(), 2200 + popSlot * 120);
 }
+
+/* ---------- disposal: a scene that is unmounted gives its GPU memory back ---------- */
+/**
+ * Removes an object from its parent and frees every geometry, material and texture under it. Cached geometries and
+ * materials are safe to free: three uploads them again the next time something draws with them.
+ */
+export function disposeTree(root) {
+  if (!root) return;
+  const seen = new Set();
+  const free = x => { if (x && !seen.has(x)) { seen.add(x); x.dispose?.(); } };
+  root.traverse(o => {
+    free(o.geometry);
+    for (const m of Array.isArray(o.material) ? o.material : o.material ? [o.material] : []) {
+      for (const k of ['map', 'emissiveMap', 'alphaMap']) free(m[k]);
+      free(m);
+    }
+  });
+  root.parent?.remove(root);
+}
+/** For the mount and unmount check: what the GPU is holding. */
+export const memory = () => ({ ...renderer.info.memory });

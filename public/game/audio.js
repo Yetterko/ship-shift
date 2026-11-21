@@ -4,8 +4,10 @@ import { fx, on, store } from './core.js';
 
 const LEVEL = 0.8;
 let AC = null, master = null, sizzle = null, alarmT = 0, smokeT = 0, muted = store.get('muted') === '1';
+// a headless test browser has no sound card, and making a context there stalls for seconds: it stays silent
+const silent = !!navigator.webdriver;
 function ctx() {
-  if (AC) return AC;
+  if (AC || silent) return AC;
   try {
     AC = new AudioContext();
     const squash = AC.createDynamicsCompressor();
@@ -71,7 +73,8 @@ export function sfx(name, delay = 0) {
     if (at === undefined) t += d * .8;
   }
 }
-on('sfx', sfx);
+// after the tap's own work: a sound never delays a panel
+on('sfx', (name, delay) => setTimeout(() => sfx(name, delay), 0));
 
 /** Called every frame with what the kitchen sounds like right now. */
 export function ambience(dt, { cooking = 0, fires = 0, smoking = 0 }) {

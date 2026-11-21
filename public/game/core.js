@@ -5,84 +5,51 @@ export const mmss = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return
 export const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 export const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-/** The latest server snapshot lives in G.S. */
-/** In a town, G.S is the kitchen being drawn, G.own is always yours, and G.visit is { of, relation, rights, owner } while you stand in somebody else's. */
-export const G = { S: null, offset: 0, own: null, visit: null };
-/** What the server will take from you in the kitchen you are standing in. In your own, everything. */
-export const can = right => !G.visit || !!G.visit.rights?.[right];
-/** The route for the kitchen you are standing in: a visitor answers and approves through the town's routes. */
-export function kpath(path) {
-  const v = G.visit; if (!v) return path;
-  let m;
-  if ((m = path.match(/^\/api\/questions\/([\w-]+)\/answer$/))) return `/api/world/kitchens/${v.of}/questions/${m[1]}/answer`;
-  if ((m = path.match(/^\/api\/orders\/(\d+)\/(review|diff)$/))) return `/api/world/kitchens/${v.of}/orders/${m[1]}/${m[2]}`;
-  return path;
-}
-/** Why a visitor may not do that here, in words for a toast or a bubble. */
-export function whyNot(right) {
-  const v = G.visit; if (!v) return '';
-  if (v.sign === 'private') return `${v.owner}'s kitchen is private: visitors can only watch.`;
-  if (right === 'answer') return `Only ${v.owner}'s team can answer here, unless the door says "Help wanted".`;
-  if (right === 'approve') return `Only ${v.owner}'s team can approve at this pass.`;
-  return `You are visiting. Only ${v.owner} can do that.`;
-}
-/** True in your own kitchen: not in the park and not visiting. town.js keeps body[data-zone]. */
-export const atHome = () => (document.body.dataset.zone || 'kitchen') === 'kitchen';
+/** G.S is the last snapshot of the floor on screen. G.offset is server time minus this clock; net.js keeps it from every `now`. */
+export const G = { S: null, offset: 0 };
 export const nowS = () => Date.now() + G.offset;
-export const orderOf = id => G.S?.orders.find(o => o.id === id);
-export const chefById = id => G.S?.chefs.find(c => c.id === id);
-export const chefName = id => chefById(id)?.name || id;
-export const questionFor = chefId => G.S?.questions.find(q => q.chefId === chefId);
-export const escalation = () => {
-  const pace = G.S?.pace || 1;
-  return { smokeMs: G.S?.escalation?.smokeMs ?? 20000 / pace, fireMs: G.S?.escalation?.fireMs ?? 60000 / pace };
-};
-/** 'claude-opus-5-5' -> 'Opus 5.5' */
-/** The demo's short shift with simulated chefs plays as one arcade round: nothing is held back for a break. */
-export const arcade = () => G.S?.driver === 'sim' && (G.S.shift?.focusMin ?? 25) <= 5;
-/** True while a pomodoro focus block is holding questions back. Never in an arcade round. */
-export const quiet = () => G.S?.shift?.mode === 'focus' && !arcade();
-/** A title card, help sheet or dialog is in front of the kitchen: the keys belong to it. */
-export const modal = () => !!document.querySelector('dialog[open], .overlay.open');
-/** localStorage that never throws (private windows, blocked storage). */
+/** A title card, sheet or dialog is in front of the scene: the keys belong to it. */
+export const modal = () => !!document.querySelector('dialog[open], .overlay.open, .sh-sheet, .sh-drawer.open, .sh-full');
+/** localStorage that never throws (private windows, blocked storage). A null value removes the key. */
 export const store = {
   get(k) { try { return localStorage.getItem(`shipshift.${k}`); } catch { return null; } },
-  set(k, v) { try { localStorage.setItem(`shipshift.${k}`, v); } catch { /* not kept */ } },
+  set(k, v) { try { if (v === null || v === undefined) localStorage.removeItem(`shipshift.${k}`); else localStorage.setItem(`shipshift.${k}`, v); } catch { /* not kept */ } },
 };
+/** 'claude-haiku-5-5' -> 'Haiku 5.5' */
 export const modelName = m => {
   const x = /claude-([a-z]+)-(\d+)(?:-(\d+))?/.exec(m || '');
   return x ? `${x[1][0].toUpperCase()}${x[1].slice(1)} ${x[2]}${x[3] && x[3].length < 3 ? '.' + x[3] : ''}` : (m || '');
 };
+/** '$0.04' */
+export const usd = n => `$${(Number(n) || 0).toFixed(2)}`;
 
 /** Counters the headless check reads to prove the juice fired. */
 export const fx = { popups: 0, shakes: 0, sounds: 0, banners: 0 };
 
 const listeners = {};
-export const on = (name, fn) => { (listeners[name] ||= []).push(fn); };
-export const emit = (name, ...args) => { for (const fn of listeners[name] || []) fn(...args); };
-
-export async function api(path, body = {}, { quiet = false } = {}) {
-  const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  const data = await res.json().catch(() => ({}));
-  if (res.status === 401) { emit('gone'); throw new Error('The kitchen has closed'); }
-  if (!res.ok && quiet) throw new Error(data.error || String(res.status));
-  if (!res.ok) { toast(data.error || `Request failed (${res.status})`, 'bad'); emit('sfx', 'err'); throw new Error(data.error || String(res.status)); }
-  return data;
-}
-export async function getJson(path) {
-  const res = await fetch(path);
-  if (!res.ok) throw new Error(String(res.status));
-  return res.json();
-}
+/** Returns a function that removes the listener. */
+export const on = (name, fn) => { (listeners[name] ||= []).push(fn); return () => { const l = listeners[name], i = l.indexOf(fn); if (i >= 0) l.splice(i, 1); }; };
+export const emit = (name, ...args) => { for (const fn of [...(listeners[name] || [])]) fn(...args); };
 
 let lastToast = { m: '', t: 0 };
-export function toast(msg, kind = '') {
-  if (msg === lastToast.m && performance.now() - lastToast.t < 1500) return;
+/** A short line at the top of the screen. action: { label, run } adds one button and keeps the toast up longer. */
+export function toast(msg, kind = '', action = null) {
+  if (msg === lastToast.m && performance.now() - lastToast.t < 1500) return null;
   lastToast = { m: msg, t: performance.now() };
+  let host = $('toasts');
+  if (!host) { host = document.createElement('div'); host.id = 'toasts'; host.className = 'toasts'; host.setAttribute('aria-live', 'polite'); document.body.append(host); }
   const el = document.createElement('div'); el.className = `toast ${kind}`; el.textContent = msg;
-  $('toasts').append(el);
-  while ($('toasts').children.length > 2) $('toasts').firstChild.remove();
-  setTimeout(() => el.classList.add('out'), 2600); setTimeout(() => el.remove(), 3000);
+  if (action) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'toast-act'; b.textContent = action.label;
+    b.onclick = () => { el.remove(); action.run(); };
+    el.append(b); el.classList.add('has-act');
+  }
+  host.append(el);
+  // at most 3 on screen; a toast with a button (Go home) outlasts plain ones
+  while (host.children.length > 3) (host.querySelector('.toast:not(.has-act)') || host.firstChild).remove();
+  const stay = action ? 9000 : 2600;
+  setTimeout(() => el.classList.add('out'), stay); setTimeout(() => el.remove(), stay + 400);
+  return el;
 }
 
 /** Inline icons, so nothing depends on an emoji font. */
