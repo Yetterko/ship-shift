@@ -11,12 +11,19 @@ export const stage = $('stage');
 // Sharp enough on a retina laptop without drawing four times the pixels: the ratio is capped, and adapt() lowers it when frames run slow.
 const params = new URLSearchParams(location.search);
 const MAX_PIXEL_RATIO = 1.5;
+/** A phone or tablet: fingers, no hover. ?touch=1 and ?touch=0 force it either way. */
+export const device = { touch: params.has('touch') ? params.get('touch') !== '0' : matchMedia('(pointer: coarse)').matches || (navigator.maxTouchPoints > 0 && !matchMedia('(hover: hover)').matches) };
+/** The two small-screen layouts, in the same words as touch.css: a phone or tablet held upright, and a phone on its side. */
+export const TALL = matchMedia('(orientation: portrait) and (max-width: 900px)');
+export const WIDE = matchMedia('(orientation: landscape) and (max-height: 520px)');
 export const quality = { pr: Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO), level: 0, outline: true, fps: 60, fixed: !!navigator.webdriver || params.get('quality') === 'high' };
 if (params.get('quality') === 'low') { quality.pr = 1; quality.fixed = true; }
+// a phone starts one step down: the same picture with a cheaper shadow, and adapt() can still take the outlines off
+if (device.touch && params.get('quality') !== 'high') quality.level = 1;
 export const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(quality.pr);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = quality.level ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.18;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -32,7 +39,8 @@ scene.add(new THREE.HemisphereLight('#fff1dc', '#6b5a7a', 1.25));
 const key = new THREE.DirectionalLight('#ffe2b8', 2.5);
 key.position.set(-5, 13, 7);
 key.castShadow = true;
-key.shadow.mapSize.set(2048, 2048);
+key.shadow.mapSize.setScalar(quality.level ? 1024 : 2048);
+quality.shadow = key.shadow.mapSize.x;
 Object.assign(key.shadow.camera, { left: -10, right: 10, top: 8, bottom: -8, near: 2, far: 32 });
 key.shadow.bias = -0.0006; key.shadow.normalBias = 0.035; key.shadow.radius = 3;
 scene.add(key);
@@ -117,23 +125,31 @@ const DIR = V(0, 15, 10.4).normalize();
 const CENTRE = V(-0.2, 0, -0.35);
 const FIT = [];
 for (const x of [-7.75, 7.6]) for (const [y, z] of [[0, -4.9], [2.55, -4.9], [0, 3.95], [0.6, 3.95]]) FIT.push(V(x, y, z));
-const view = { dist: 24, sx: 0, sy: 0, tDist: 24, tsx: 0, tsy: 0, dock: 0, shake: 0, shakeAmp: 0, snap: true, calm: false, top: 58 };
+// An upright phone is narrow, so the room is framed tighter (the far pavement gives way) and from
+// steeper above: the floor then stands taller on the screen and nothing on a counter hides behind the one in front.
+const DIR_TALL = V(0, 15, 6.4).normalize();
+const FIT_TALL = [];
+for (const x of [-7.55, 7.35]) for (const [y, z] of [[0, -4.9], [2.55, -4.9], [0, 3.9], [0.5, 3.9]]) FIT_TALL.push(V(x, y, z));
+const view = { dist: 24, sx: 0, sy: 0, tDist: 24, tsx: 0, tsy: 0, dock: 0, shake: 0, shakeAmp: 0, snap: true, calm: false, top: 58, ft: null, head: 0, tall: false, il: 0, ir: 0, ib: 0, room: null, bubble: null };
 const look = CENTRE.clone();
 const pv = V();
 function place(dist, target) {
-  camera.position.copy(target).addScaledVector(DIR, dist);
+  camera.position.copy(target).addScaledVector(view.tall ? DIR_TALL : DIR, dist);
   camera.lookAt(target); camera.updateMatrixWorld();
 }
 function solveFit() {
   const w = stage.clientWidth, h = stage.clientHeight;
   if (!w || !h) return;
-  const free = { l: 10, r: w * (1 - view.dock) - 10, t: view.top + 4, b: h - 8 };
+  const tall = view.tall, FIT_NOW = tall ? FIT_TALL : FIT, edge = tall ? 2 : 10;
+  // upright, review is a sheet under the room, so only a docked side panel squeezes the room sideways; on a phone's side it takes more
+  const dock = tall ? 0 : view.dock && WIDE.matches ? 0.6 : view.dock;
+  const free = { l: edge + view.il, r: Math.min(w - view.ir, w * (1 - dock)) - edge, t: (view.ft ?? view.top) + 4 + view.head, b: h - 8 - view.ib };
   camera.clearViewOffset(); camera.aspect = w / h; camera.updateProjectionMatrix();
   let lo = 8, hi = 80, box = null;
   const measure = dist => {
     place(dist, CENTRE);
     const b = { x0: 1e9, x1: -1e9, y0: 1e9, y1: -1e9 };
-    for (const p of FIT) { pv.copy(p).project(camera); const x = (pv.x + 1) / 2 * w, y = (1 - pv.y) / 2 * h; b.x0 = Math.min(b.x0, x); b.x1 = Math.max(b.x1, x); b.y0 = Math.min(b.y0, y); b.y1 = Math.max(b.y1, y); }
+    for (const p of FIT_NOW) { pv.copy(p).project(camera); const x = (pv.x + 1) / 2 * w, y = (1 - pv.y) / 2 * h; b.x0 = Math.min(b.x0, x); b.x1 = Math.max(b.x1, x); b.y0 = Math.min(b.y0, y); b.y1 = Math.max(b.y1, y); }
     return b;
   };
   for (let i = 0; i < 22; i++) {
@@ -143,15 +159,32 @@ function solveFit() {
   box = measure(hi);
   view.tDist = hi;
   view.tsx = (box.x0 + box.x1) / 2 - (free.l + free.r) / 2;
-  view.tsy = (box.y0 + box.y1) / 2 - (free.t + free.b) / 2;
+  // upright, the room sits against the top strip and everything else is laid out under it
+  view.tsy = tall ? box.y0 - free.t : (box.y0 + box.y1) / 2 - (free.t + free.b) / 2;
+  view.room = { x0: box.x0 - view.tsx, x1: box.x1 - view.tsx, y0: box.y0 - view.tsy, y1: box.y1 - view.tsy };
 }
 export function resize() {
   const w = stage.clientWidth, h = stage.clientHeight;
   effect.setSize(w, h, false);
   renderer.domElement.style.width = '100%'; renderer.domElement.style.height = '100%';
   solveFit(); view.snap = true;
+  for (const L of labels.values()) L.w = 0;
 }
 addEventListener('resize', resize);
+/**
+ * Small screens: what the page keeps clear of the room. top is where the top strip ends (null leaves it alone) and head is room left under it for the signs over the back wall; left, right and bottom are bands taken
+ * by thumb controls or a side column; tall is the upright layout. bubble, when set, is where a chef's question is shown instead
+ * of over the chef. Returns the room's rectangle on screen. A desktop page never calls this.
+ */
+export function setFrame({ top = null, head = 0, left = 0, right = 0, bottom = 0, tall = false, bubble = null } = {}) {
+  view.bubble = bubble;
+  if (top !== view.ft || head !== view.head || left !== view.il || right !== view.ir || bottom !== view.ib || tall !== view.tall) {
+    Object.assign(view, { ft: top, head, il: left, ir: right, ib: bottom, tall });
+    solveFit(); view.snap = true;
+    for (const L of labels.values()) L.w = 0;
+  }
+  return view.room;
+}
 /** The review panel docks over this fraction of the stage; the kitchen slides and shrinks to stay in view. */
 export function setDock(frac) { if (view.dock !== frac) { view.dock = frac; solveFit(); } }
 /** Presenter mode: the camera stops following and shaking, and the room leaves space for a taller HUD. */
@@ -166,7 +199,7 @@ export function updateCamera(dt, focus) {
   view.snap = false;
   view.dist += (view.tDist - view.dist) * k; view.sx += (view.tsx - view.sx) * k; view.sy += (view.tsy - view.sy) * k;
   // eased toward the player, so the room breathes without ever scrolling; less when the review panel narrows the view
-  const k10 = view.calm ? 0 : view.dock ? 0.02 : 0.07;
+  const k10 = view.calm ? 0 : view.dock || view.tall ? 0.02 : 0.07;
   look.lerp(V(CENTRE.x + (focus.x - CENTRE.x) * k10, 0, CENTRE.z + (focus.z - CENTRE.z) * k10), 1 - Math.exp(-dt * 5));
   place(view.dist, look);
   if (view.shake > 0) {
@@ -177,12 +210,13 @@ export function updateCamera(dt, focus) {
   camera.setViewOffset(w, h, Math.round(view.sx), Math.round(view.sy), w, h);
   camera.updateMatrixWorld();
 }
-export function render() { if (quality.outline) effect.render(scene, camera); else renderer.render(scene, camera); }
+export function render() { adapt(); if (quality.outline) effect.render(scene, camera); else renderer.render(scene, camera); }
 
 /* ---------- frame rate: measured every two seconds; a slow machine gives up pixels, then shadow detail, then outlines ---------- */
-let qSince = performance.now(), qFrames = 0, qWarm = 2;
+let qSince = performance.now(), qFrames = 0, qWarm = 2, qFrame = -1;
 export function adapt() {
-  qFrames++;
+  if (qFrame === frameNo) return;                // counted once a frame, whoever calls
+  qFrame = frameNo; qFrames++;
   const now = performance.now(), span = now - qSince;
   if (span < 2000) return;
   const fps = qFrames * 1000 / span; qSince = now; qFrames = 0;
@@ -191,7 +225,7 @@ export function adapt() {
   if (qWarm > 0) { qWarm--; return; }            // the first seconds compile shaders
   if (quality.fixed || document.hidden || fps >= 42) return;
   if (quality.pr > 1) { quality.pr = Math.max(1, quality.pr - 0.25); renderer.setPixelRatio(quality.pr); resize(); }
-  else if (quality.level === 0) { quality.level = 1; key.shadow.mapSize.set(1024, 1024); key.shadow.map?.dispose(); key.shadow.map = null; }
+  else if (quality.level === 0) { quality.level = 1; quality.shadow = 1024; key.shadow.mapSize.set(1024, 1024); key.shadow.map?.dispose(); key.shadow.map = null; }
   else if (quality.level === 1 && fps < 30) { quality.level = 2; quality.outline = false; }
   qWarm = 1;
 }
@@ -243,11 +277,13 @@ export function label(key, html, pos, { cls = '', pri = 1, click = null, anchor 
   if (L.html !== html) { L.el.innerHTML = html; L.html = html; L.w = 0; }
   if (L.cls !== c) { L.el.className = c; L.cls = c; L.w = 0; }
   if (click) L.el.dataset.goto = click; else delete L.el.dataset.goto;
-  L.pos.copy(pos); L.seen = frameNo; L.pri = pri; L.anchor = anchor;
+  L.pos.copy(pos); L.seen = frameNo; L.pri = pri; L.anchor = anchor; L.dock = key === 'bubble';
 }
 const scr = {};
 export function placeLabels() {
   const w = stage.clientWidth, h = stage.clientHeight, taken = [];
+  // labels keep to the room: clear of a side column, and upright they stay above whatever is laid out under the room
+  const x0 = 6 + view.il, x1 = w - 6 - view.ir, y1 = (view.tall && view.room ? Math.min(h, view.room.y1 + 4) : h - view.ib) - 6;
   const live = [];
   for (const [k, L] of labels) {
     if (L.seen !== frameNo) { L.el.remove(); labels.delete(k); continue; }
@@ -259,13 +295,15 @@ export function placeLabels() {
   for (const L of live) {
     toScreen(L.pos, scr);
     const ax = L.anchor === 'tl' ? scr.x : L.anchor === 'tr' ? scr.x - L.w : scr.x - L.w / 2, ay = L.anchor === 'bottom' ? scr.y - L.h : scr.y;
-    const top = view.top;
-    const r = { x: clamp(ax, 6, Math.max(6, w - L.w - 6)), y: clamp(ay, top, Math.max(top, h - L.h - 6)), w: L.w, h: L.h };
+    const top = view.ft ?? view.top;
+    // a docked question sits in the space the page gave it, clear of the room and of every other label
+    if (L.dock && view.bubble) { L.el.classList.remove('hid'); L.el.style.transform = `translate(${Math.round(view.bubble.x)}px,${Math.round(view.bubble.y)}px)`; continue; }
+    const r = { x: clamp(ax, x0, Math.max(x0, x1 - L.w)), y: clamp(ay, top, Math.max(top, y1 - L.h)), w: L.w, h: L.h };
     let ok = !hits(r);
     for (const [dx, dy] of [[0, -1], [0, 1], [1, 0], [-1, 0]]) {
       if (ok) break;
       const t = { ...r, x: r.x + dx * (L.w * 0.6 + 6), y: r.y + dy * (L.h + 5) };
-      if (t.x >= 6 && t.y >= top && t.x + t.w <= w - 6 && t.y + t.h <= h - 6 && !hits(t)) { r.x = t.x; r.y = t.y; ok = true; }
+      if (t.x >= x0 && t.y >= top && t.x + t.w <= x1 && t.y + t.h <= y1 && !hits(t)) { r.x = t.x; r.y = t.y; ok = true; }
     }
     L.el.classList.toggle('hid', !ok);
     if (!ok) continue;
@@ -284,9 +322,11 @@ export function popup(text, pos, cls = '') {
   popSlotT = now;
   const el = document.createElement('div'); el.className = `pop ${cls}`; el.textContent = text;
   toScreen(pos, scr);
-  el.style.left = `${clamp(scr.x, 60, stage.clientWidth - 60)}px`; el.style.top = `${clamp(scr.y - popSlot * 30, 80, stage.clientHeight - 40)}px`;
   el.style.animationDelay = `${popSlot * 0.12}s`;
-  popSlot++;
   popHost.append(el);
+  // kept whole on a narrow screen: the text is centred on its point, so half its width (and its pop to 1.25x) must fit either side
+  const half = Math.max(60, el.offsetWidth * 0.625 + 4), w = stage.clientWidth - view.ir;
+  el.style.left = `${clamp(scr.x, Math.min(half, w / 2), Math.max(w - half, w / 2))}px`; el.style.top = `${clamp(scr.y - popSlot * 30, 80, stage.clientHeight - 40)}px`;
+  popSlot++;
   setTimeout(() => el.remove(), 2200 + popSlot * 120);
 }

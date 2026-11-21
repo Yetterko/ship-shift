@@ -13,6 +13,7 @@
     "smoke": "node test/smoke.mjs",
     "ui": "node test/ui.mjs",
     "game": "node test/game.mjs",
+    "mobile": "node test/mobile.mjs",
     "sharetest": "node test/share.mjs"
   },
   "license": "UNLICENSED",
