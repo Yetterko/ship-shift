@@ -3,6 +3,7 @@ import { $, G, clamp, customerById, watching } from './core.js';
 import { THREE, V, scene, camera, renderer } from './scene.js';
 import { player, targets, targetById, blocked, findPath, PLAYER_R, ring, targetDot, arrow, hintRing, kick } from './world.js';
 import { openSpec, closePanel, panelIsOpen, coach } from './panels.js';
+import { soakedFactor } from './water.js';
 
 const keys = {};
 const KEYMAP = { KeyW: 'up', ArrowUp: 'up', KeyS: 'down', ArrowDown: 'down', KeyA: 'left', ArrowLeft: 'left', KeyD: 'right', ArrowRight: 'right' };
@@ -98,14 +99,15 @@ export function step(dt, t) {
   if (mx || mz) { const l = Math.hypot(mx, mz); mx /= l; mz /= l; }
   else if (player.path?.length) {
     const p = player.path[0], dx = p.x - pos.x, dz = p.z - pos.z, d = Math.hypot(dx, dz);
-    if (d < SPEED * dt + 0.03) {
+    if (d < SPEED * soakedFactor() * dt + 0.03) {
       if (!blocked(p.x, p.z, PLAYER_R - 0.03)) { pos.x = p.x; pos.z = p.z; }
       player.path.shift();
       if (!player.path.length) { arrived = player.onArrive; player.path = null; player.onArrive = null; }
     } else { mx = dx / d; mz = dz / d; }
   }
   const k = Math.min(1, dt * 20);
-  player.vx += (mx * SPEED - player.vx) * k; player.vz += (mz * SPEED - player.vz) * k;
+  const speed = SPEED * soakedFactor();   // soaked waiters squelch along at half speed
+  player.vx += (mx * speed - player.vx) * k; player.vz += (mz * speed - player.vz) * k;
   if (!mx && !mz && Math.hypot(player.vx, player.vz) < 0.4) player.vx = player.vz = 0;
   const n = Math.max(1, Math.ceil(dt / 0.016));
   // if the waiter somehow ends up inside furniture, let them walk straight out instead of freezing

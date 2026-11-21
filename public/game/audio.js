@@ -33,6 +33,7 @@ const CUES = {
   coin: [[1319, .06, 'square', .04], [1976, .2, 'square', .035]], back: [[260, .12, 'sawtooth', .05, 180], [180, .18, 'sawtooth', .05, 120]],
   spoil: [[220, .16, 'sawtooth', .07, 110], [110, .3, 'sawtooth', .07, 70]], frost: [[2400, .08, 'sine', .04, 1200], [1500, .2, 'sine', .04, 900]],
   bell: [[1568, .6, 'sine', .1], [1175, .9, 'sine', .08]], tick: [[1100, .03, 'square', .035]], err: [[150, .16, 'sawtooth', .045]],
+  spray: [[1400, .07, 'sawtooth', .018, 500], [900, .05, 'sine', .03, 400]], splash: [[420, .1, 'triangle', .08, 140], [1300, .08, 'sine', .05, 500], [700, .12, 'sine', .04, 260]],
   lever: [[240, .05, 'square', .05], [360, .07, 'square', .05]], alarm: [[880, .16, 'square', .05], [660, .16, 'square', .05]], star: [[1047, .1, 'triangle', .09], [1568, .3, 'triangle', .08]],
 };
 export function sfx(name) {

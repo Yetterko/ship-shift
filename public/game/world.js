@@ -554,3 +554,5 @@ export const world = { cooking: 0 };
 export function dust(n = 5) { spawn('puff', player.g.position.clone().add(V(0, 0.12, 0)), '#f3e2c0', { n, spread: 0.4, up: 0.5, out: 1.2, life: 0.45, size: 1.1, opacity: 0.7 }); }
 export function billFx(customerId) { confetti(customerPos(customerId)); shake(0.18); }
 export { popup };
+// the water fight builds its extra waiters from the same parts
+export { character, pose, walk, face };

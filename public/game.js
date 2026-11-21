@@ -5,6 +5,7 @@ import { syncWorld, animateWorld, world, player, targets, blocked, customerPos, 
 import { step, go, state as inputState } from './game/input.js';
 import { hud, renderPanel, ui, diffSeen, notifyBell, panelIsOpen } from './game/panels.js';
 import { sfx, ambience, setMuted, isMuted } from './game/audio.js';
+import { stepWater, onWaterMessage, setSocket, water } from './game/water.js';
 
 /* ---------- server state ---------- */
 let lastPointT = Infinity, lastBell = null, titleT = null;
@@ -59,8 +60,10 @@ on('report', stars => sfx(stars >= 3 ? 'star' : 'bell'));
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${proto}://${location.host}/ws${watching() ? '?watch=1' : ''}`);
-  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.type === 'state') apply(m.state); };
+  ws.onopen = () => setSocket(ws);
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.type === 'state') apply(m.state); else if (m.type?.startsWith('water:')) onWaterMessage(m); };
   ws.onclose = ev => {
+    setSocket(null);
     if (ev.code === 4001) { toast('This restaurant closed. Reloading a fresh one…', 'bad'); setTimeout(() => location.reload(), 1800); return; }
     toast('Lost the restaurant. Reconnecting…', 'bad'); setTimeout(connect, 1500);
   };
@@ -77,6 +80,7 @@ function frame() {
   nextFrame();
   const near = step(dt, t);
   if (G.S) { animateWorld(dt, t, near); ambience(dt, { cooking: world.cooking, fires: 0 }); }
+  stepWater(dt);
   stepParticles(dt);
   updateCamera(dt, player.g.position);
   placeLabels();
@@ -87,7 +91,7 @@ function frame() {
 /* ---------- test hook: lets the headless check drive the game ---------- */
 const s = {};
 window.__ship = {
-  go, player, targets, fx, ui, blocked, diffSeen, panelIsOpen,
+  go, player, targets, fx, ui, blocked, diffSeen, panelIsOpen, water,
   get state() { return G.S; }, get near() { return inputState.near?.id || null; },
   look() {
     const w = stage.clientWidth, xs = [[-6, 3.5], [6, 3.5]].map(([x, z]) => toScreen(V(x, 0, z), s).x);

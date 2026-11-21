@@ -9,6 +9,7 @@ import { Budget } from './customers.mjs';
 import { ensureProjectRepo, CUSTOMERS, PROJECT_NAME } from './projects/roster-cafe.mjs';
 import { isRepo, currentBranch } from './git.mjs';
 import { Sessions, sessionIdFrom, sessionCookie, allow, scrubber } from './sessions.mjs';
+import { joinWaterFight } from './water.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
@@ -201,6 +202,7 @@ async function main() {
     if (!ctx.sameOrigin(req)) return ws.close(1008, 'Wrong origin');
     sockets.add(ws); ws.on('close', () => sockets.delete(ws));
     ws.send(JSON.stringify({ type: 'state', state: r.snapshot() }));
+    joinWaterFight(ws, sockets);
   });
   server.listen(PORT, HOST, () => {
     console.log(`Ship Shift is open at http://${HOST}:${PORT}  (${r.name})`);
@@ -423,6 +425,7 @@ async function mainPublic() {
         ws.on('error', () => {});
         flagship.sockets.add(ws); ws.on('close', () => flagship.sockets.delete(ws));
         ws.send(scrub(JSON.stringify({ type: 'state', state: flagship.restaurant.snapshot() })));
+        joinWaterFight(ws, flagship.sockets);
       });
     }
     const s = sessions.find(sessionIdFrom(req));
@@ -436,6 +439,7 @@ async function mainPublic() {
       s.watch(s.sockets);
       ws.on('close', () => s.sockets.delete(ws));
       if (ws.readyState === 1) ws.send(scrub(JSON.stringify({ type: 'state', state: s.restaurant.snapshot() })));
+      joinWaterFight(ws, s.sockets);
     });
   });
 

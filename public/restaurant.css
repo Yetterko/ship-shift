@@ -233,3 +233,25 @@ body.watching .coach, body.watching #breakBtn { display: none !important; }
 }
 
 @media (orientation: portrait) and (max-width: 700px) { .modetag { top: 92px; bottom: auto; } }
+
+/* ---------- water fight ---------- */
+.water { position: absolute; left: 14px; bottom: 14px; z-index: 4; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; pointer-events: none; }
+.water > * { pointer-events: auto; }
+.wbtn { width: 58px; height: 58px; border-radius: 50%; display: grid; place-items: center; position: relative; background: #bfe9ff; color: var(--ink); border: 3px solid var(--line); box-shadow: 0 4px 0 var(--line); cursor: pointer; padding: 0; touch-action: none; user-select: none; -webkit-user-select: none; }
+.wbtn svg { width: 32px; height: 32px; }
+.wbtn span { position: absolute; right: -4px; bottom: -4px; background: var(--paper); border: 2px solid var(--line); border-radius: 6px; font: 700 11px/1 var(--body); padding: 2px 5px; }
+.wbtn:hover { background: #9fdcff; }
+.wbtn:active { transform: translateY(4px); box-shadow: none; }
+.wbtn.wet { animation: wwet .5s ease-in-out infinite alternate; }
+@keyframes wwet { to { background: #7fd0ff; } }
+.wboard { background: rgba(255, 246, 227, .95); border: 3px solid var(--line); border-radius: 14px; box-shadow: var(--hard); padding: 7px 10px; min-width: 170px; font-size: 13px; }
+.wboard h3 { margin: 0 0 4px; font: 400 12px/1.2 var(--display); letter-spacing: .5px; color: #1f6fa8; }
+.wboard ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
+.wboard li { display: flex; align-items: center; gap: 6px; }
+.wboard li i { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--line); flex: none; }
+.wboard li span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wboard li.you span { font-weight: 700; }
+.wtag { display: flex; flex-direction: column; align-items: center; background: var(--paper); border: 3px solid var(--c, var(--line)); border-radius: 10px; padding: 2px 8px; font-size: 12px; line-height: 1.15; box-shadow: 0 2px 0 var(--line); }
+.wtag i { font-style: normal; color: #1f6fa8; font-size: 11px; }
+@media (orientation: portrait) and (max-width: 700px) { .water { bottom: 72px; } .wboard { min-width: 140px; font-size: 12px; } }
+@media (prefers-reduced-motion: reduce) { .wbtn.wet { animation: none; } }

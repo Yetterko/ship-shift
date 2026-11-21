@@ -12,7 +12,8 @@
     "check": "node server/check.mjs",
     "smoke": "node test/smoke.mjs",
     "game": "node test/game.mjs",
-    "publictest": "node test/public.mjs"
+    "publictest": "node test/public.mjs",
+    "water": "node test/water.mjs"
   },
   "license": "UNLICENSED",
   "dependencies": {

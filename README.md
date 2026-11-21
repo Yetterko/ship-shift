@@ -36,6 +36,15 @@ npm run share     # public mode on this laptop behind a Cloudflare quick tunnel,
 
 Then open http://127.0.0.1:4610. Each visitor's restaurant is a fresh git copy of `examples/roster-cafe`, a small rostering and pay app for the fictional Little Wattle cafe. Five customers queue outside (CAFE-101 to CAFE-105), and each ticket fixes one of the app's planted TODOs: Sunday penalty rates, overnight closes, double bookings, Queensland public holidays and a payroll CSV. Run `git log --graph` in `.kitchen/demo/repo` after a demo to see what you shipped.
 
+## Water fight
+
+Every waiter carries a water gun. Press **F**, or hold the round water button at the bottom left, to spray the way you are facing.
+
+- Everyone looking at the same restaurant gets their own waiter: open a second tab of `npm run demo`, or let people watch the team kitchen at `/watch`, and you can soak each other. The one who gets wet reports the hit, so nobody can claim splashes they did not land.
+- On your own, a rival waiter from across the street walks in after your first shot and fights back. They go home 40 seconds after you stop spraying, or as soon as a real opponent shows up.
+- Getting soaked slows you to half speed for 1.6 seconds. Splashes only count on the water fight scoreboard; they never touch the restaurant's score, patience or bills.
+- `npm run water` checks it headless: two waiters soak each other, then one fights the rival.
+
 ## Agents, models and caps
 
 Every agent runs on **Claude Haiku** (`claude-haiku-5-5`) unless you set `SHIP_MODEL` / `SHIP_CUSTOMER_MODEL`.
