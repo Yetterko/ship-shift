@@ -32,6 +32,8 @@
     </div>
     <button class="rb" id="menuBtn" type="button" title="Menu" aria-label="Menu" aria-expanded="false" data-icon="list"></button>
     <div class="tools" id="tools">
+      <p class="menu-stats" id="menuStats"></p>
+      <button class="rb only-narrow" id="urgentBtn" type="button" title="Walk to whatever needs you most (Tab)" aria-label="Most urgent"><span data-icon="flame"></span><em>Most urgent</em></button>
       <button class="rb" id="newOrderBtn" type="button" title="New order" aria-label="New order"><span data-icon="plus"></span><em>New order</em></button>
       <button class="rb" id="soundBtn" type="button" title="Sound (M)" aria-label="Sound" aria-pressed="true"><span id="soundIcon" data-icon="sound"></span><em>Sound</em></button>
       <button class="rb" id="helpBtn" type="button" title="How it works (?)" aria-label="How it works"><span data-icon="help"></span><em>How it works</em></button>
@@ -90,8 +92,6 @@
   <div class="pad" id="pad">
     <button class="tb ctx" id="tCall" type="button" data-tk="F" hidden><span data-icon="q"></span><em>Call out</em></button>
     <button class="tb ctx" id="tDrop" type="button" data-tk="Q" hidden><em>Put<br>down</em></button>
-    <button class="tb" id="tUrgent" type="button" data-tk="Tab" aria-label="Go to the most urgent thing"><span data-icon="flame"></span><em>Urgent</em></button>
-    <button class="tb" id="tDash" type="button" data-tk="Shift"><em>Dash</em></button>
     <button class="tb act" id="tAct" type="button" data-tk="E"><b>USE</b><small id="tActHint"></small></button>
   </div>
 

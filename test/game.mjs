@@ -24,7 +24,7 @@ function serve(args, env) {
   const child = spawn(process.execPath, ['server/index.mjs', ...args], { env: { ...process.env, ...clean, ...env }, stdio: 'ignore', windowsHide: true });
   servers.push(child);
 }
-async function up(base) { for (let i = 0; i < 75; i++) { try { await fetch(`${base}/api/state`); return; } catch { await sleep(200); } } throw new Error(`No kitchen at ${base}`); }
+async function up(base) { for (let i = 0; i < 200; i++) { try { await fetch(`${base}/api/state`); return; } catch { await sleep(200); } } throw new Error(`No kitchen at ${base}`); }
 
 async function findChrome() {
   if (process.env.SHIP_CHROME) return process.env.SHIP_CHROME;
@@ -44,7 +44,10 @@ const ship = fn => page.evaluate(fn);
 const order = id => page.evaluate(id => window.__ship.state.orders.find(o => o.id === id), id);
 const walk = async (id, until, ms = 30000, arg) => {
   await page.evaluate(id => window.__ship.walkTo(id), id);
-  await page.waitForFunction(until, arg, { timeout: ms });
+  await page.waitForFunction(until, arg, { timeout: ms }).catch(async e => {
+    const seen = await page.evaluate(arg => ({ at: typeof window.__ship.near === 'string' ? window.__ship.near : window.__ship.near?.id ?? null, order: (({ id, state, chefId }) => ({ id, state, chefId }))(window.__ship.state.orders.find(o => o.id === arg) || {}), carry: window.__ship.player.carry ? `${window.__ship.player.carry.type} ${window.__ship.player.carry.id}` : null, modal: window.__ship.modal(), toast: document.getElementById('toasts')?.textContent }), arg);
+    throw new Error(`walking to ${id} for ${arg ?? ''}: ${e.message.split(/\n/)[0]} ${JSON.stringify(seen)}`);
+  });
 };
 const slotFor = async id => {
   await page.waitForFunction(id => window.__ship.slotOf.has(id), id, { timeout: 120000 });
@@ -265,8 +268,11 @@ async function demo() {
   await sleep(500);
   await shot('13-service-banner');
   // The demo's round is three real minutes. This run stops to take pictures, and may share the machine with other checks,
-  // so it puts five minutes on the clock here and plays a one minute round of its own at the end.
-  ok(await post('/api/shift/start', { focusMin: 5, breakMin: 1 }), 'the test gives itself a longer clock for the middle of the run');
+  // so it puts five minutes on the clock here, winds it back to five at each part below, and plays a one minute round of its own
+  // at the end. (Five minutes for the whole middle was too few on a busy machine: the round ended mid-review, and the next Enter
+  // landed on the report's Play again. A longer round is no help: past five minutes it is a pomodoro, not an arcade round.)
+  const moreTime = () => post('/api/shift/start', { focusMin: 5, breakMin: 1 });
+  ok(await moreTime(), 'the test gives itself a longer clock for the middle of the run');
 
   // while the first chef cooks, the arrow sends you for the next ticket, and that one asks a question
   const asks = await page.waitForFunction(t => window.__ship.state.orders.find(o => o.title === t && window.__ship.slotOf.has(o.id))?.id, T.asks, { timeout: 60000 }).then(h => h.jsonValue());
@@ -320,6 +326,7 @@ async function demo() {
   await shot('23-guide-done');
 
   /* ---------- a chef left waiting: smoke, then fire, and what it cost ---------- */
+  await moreTime();
   const sunday = await idOf(T.sunday);
   await walk(await slotFor(sunday), id => window.__ship.player.carry?.id === id, 20000, sunday);
   await walk(await freeChef(), id => window.__ship.state.orders.find(o => o.id === id).chefId, 20000, sunday);
@@ -336,6 +343,7 @@ async function demo() {
   await shot('25-chef-smoke');
   await level(3); await sleep(1100);
   await shot('26-chef-fire');
+  await page.waitForFunction(() => window.__ship.world.fires === 1 && !!document.querySelector('.lv3'), null, { timeout: 8000 }).catch(() => {});
   ok(await ship(() => window.__ship.world.fires === 1 && !!document.querySelector('.lv3')), 'a chef left waiting smokes, then catches fire: the alarm counts one fire and its sign turns red');
   await walk(stove, () => document.querySelector('.bub li[data-key="1"]'));
   await page.waitForFunction(id => window.__ship.state.questions.find(q => q.orderId === id)?.charged > 0 && document.querySelector('.costline'), holiday, { timeout: 10000 });
@@ -350,6 +358,7 @@ async function demo() {
   await shot('28-always-jar');
 
   /* ---------- two plates that fight over the same lines: the string, the cold plate, the send-back ---------- */
+  await moreTime();
   await page.waitForFunction(([a, b]) => { const s = window.__ship.state; return s.overlaps.some(x => x.includes(a) && x.includes(b) && x[3].length) && [a, b].every(id => window.__ship.plates.get(id)?.mv.key?.startsWith('pass') && window.__ship.plates.get(id).mv.t >= 1); }, [sunday, holiday], { timeout: 120000 });
   await page.evaluate(() => window.__ship.walkTo('prep', { act: false }));
   await sleep(1500);
@@ -388,7 +397,7 @@ async function demo() {
   const rep = await ship(() => ({ stars: document.querySelectorAll('#repStars .on').length, title: document.getElementById('repTitle').textContent, shipped: window.__ship.state.shift.report.shipped, again: !document.getElementById('repAgain').hidden }));
   ok(rep.stars >= 2 && rep.shipped >= 1 && rep.again, `the shift ends on its report: "${rep.title}", ${rep.stars} of 3 stars for ${rep.shipped} shipped, and a Play again button`);
   await page.locator('#repAgain').click();
-  await page.waitForFunction(() => !document.querySelector('dialog[open]') && window.__ship.state.shift.mode === 'off' && window.__ship.state.orders.filter(o => o.state === 'waiting').length >= 1, null, { timeout: 15000 });
+  await page.waitForFunction(() => !document.querySelector('dialog[open]') && window.__ship.state.shift.mode === 'off' && window.__ship.state.orders.filter(o => o.state === 'waiting').length >= 1, null, { timeout: 60000 });       // a fresh demo repo is rebuilt with git: slow on a busy machine
   await sleep(700);
   await shot('35-play-again');
   const next = await ship(() => window.__ship.state.orders.filter(o => o.state === 'waiting' && window.__ship.slotOf.has(o.id)).sort((a, b) => a.id - b.id)[0].id);

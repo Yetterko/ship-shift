@@ -55,13 +55,17 @@ let gone = false;
 function kitchenGone() { if (gone) return; gone = true; $('gone').classList.add('open'); $('goneBtn').focus(); }
 on('gone', kitchenGone);
 $('goneBtn').onclick = () => location.reload();
+// The reset arrives twice (a message, then the socket closing with 4002). A second reload would abort the first page load after
+// the server opened a kitchen for it, leaving a player in the town that nobody is.
+let reloading = false;
+const reloadOnce = () => { if (!reloading) { reloading = true; location.reload(); } };
 function connect() {
   if (gone) return;
   const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
     if (route(m)) return;                                   // the town's own messages: world, presence, zone, fresh
-    if (m.type === 'reset') return location.reload();
+    if (m.type === 'reset') return reloadOnce();
     if (m.type !== 'state') return;
     // in a shared town the socket also carries the kitchen you are visiting
     if (m.relation && m.relation !== 'owner') return townState(m);
@@ -72,7 +76,7 @@ function connect() {
   ws.onopen = () => attach(ws);
   ws.onclose = async e => {
     if (e.code === 4001) return kitchenGone();
-    if (e.code === 4002) return location.reload();      // the presenter reset the town
+    if (e.code === 4002) return reloadOnce();      // the presenter reset the town
     // a refused upgrade looks like any other drop, so ask the API whether the kitchen is still there
     const status = await fetch('/api/state').then(r => r.status, () => 0);
     if (status === 401) return kitchenGone();

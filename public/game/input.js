@@ -240,6 +240,9 @@ canvas.addEventListener('pointerdown', e => {
 });
 canvas.addEventListener('pointermove', e => {
   const f = fingers.get(e.pointerId); if (!f) return;
+  if (stick.id === null && Math.hypot(e.clientX - f.x, e.clientY - f.y) > 12) {
+    if (f.t - (stick.endT || 0) < 700) dash();      // a thumb back down straight after a flick, and flicking again, is a dash
+  }
   if (stick.id === null && Math.hypot(e.clientX - f.x, e.clientY - f.y) > 12) { stick.id = e.pointerId; stick.ox = f.x; stick.oy = f.y; stick.used = true; player.path = null; player.targetSt = null; }
   if (stick.id !== e.pointerId) return;
   let dx = e.clientX - stick.ox, dy = e.clientY - stick.oy, d = Math.hypot(dx, dy);
@@ -251,7 +254,7 @@ canvas.addEventListener('pointermove', e => {
 const lift = e => {
   const f = fingers.get(e.pointerId); if (!f) return;
   fingers.delete(e.pointerId);
-  if (stick.id === e.pointerId) { stick.id = null; stick.x = stick.y = stick.kx = stick.ky = 0; return; }
+  if (stick.id === e.pointerId) { stick.id = null; stick.endT = performance.now(); stick.x = stick.y = stick.kx = stick.ky = 0; return; }
   if (e.type === 'pointerup' && performance.now() - f.t < 600 && !dialogOpen()) pickAt(f.x, f.y);
 };
 canvas.addEventListener('pointerup', lift);

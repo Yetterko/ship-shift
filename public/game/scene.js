@@ -126,7 +126,7 @@ let DIR = DIRS.front;
 const CENTRE = V(-0.2, 0, -0.35);
 const FITS = { front: [], side: [] };
 for (const x of [-7.75, 7.6]) for (const [y, z] of [[0, -4.9], [2.55, -4.9], [0, 3.95], [0.6, 3.95]]) FITS.front.push(V(x, y, z));
-for (const z of [-5.3, 3.9]) for (const [x, y] of [[-6.9, 0], [6.4, 0], [6.4, 2.1], [7.6, 1.3]]) FITS.side.push(V(x, y, z));
+for (const z of [-4.8, 3.72]) for (const [x, y] of [[-6.7, 0], [6.4, 0], [6.4, 2.1], [7.5, 1.3]]) FITS.side.push(V(x, y, z));
 // follow: { x0, x1, z0, z1 } while the camera follows the player across a place bigger than the screen (the park), else null.
 // wide: the whole of that place at once.
 const view = { dist: 24, sx: 0, sy: 0, tDist: 24, tsx: 0, tsy: 0, dock: 0, dockB: 0, shake: 0, shakeAmp: 0, snap: true, calm: false, top: 58, side: false, follow: null, wide: false, spanX: 16, spanZ: 9, pad: { l: 10, r: 10, t: null, b: 8 } };
@@ -184,8 +184,9 @@ addEventListener('resize', resize);
 /** The review panel docks over this fraction of the stage; the kitchen slides and shrinks to stay in view. */
 export function setDock(frac, bottom = 0) { if (view.dock !== frac || view.dockB !== bottom) { view.dock = frac; view.dockB = bottom; solveFit(); } }
 /** Which way the camera looks, and how much of each edge the HUD and the touch controls cover. */
-export function setLayout({ side = false, pad }) {
+export function setLayout({ side = false, pad, cap = 0 }) {
   const turned = view.side !== side;
+  view.cap = cap;                       // a phone shows only this many floating labels at once, the most pressing first
   view.side = side; DIR = side ? DIRS.side : DIRS.front; Object.assign(view.pad, pad);
   solveFit(); if (turned) view.snap = true;
   for (const L of labels.values()) L.w = 0;
@@ -323,7 +324,9 @@ export function placeLabels() {
   }
   live.sort((a, b) => b.pri - a.pri);
   const hits = r => taken.some(t => r.x < t.x + t.w + 3 && t.x < r.x + r.w + 3 && r.y < t.y + t.h + 3 && t.y < r.y + r.h + 3);
+  let shown = 0;
   for (const L of live) {
+    if (view.cap && !L.cls.includes(' dot') && ++shown > view.cap) { L.el.classList.add('hid'); continue; }
     toScreen(L.pos, scr);
     const ax = L.anchor === 'tl' ? scr.x : L.anchor === 'tr' ? scr.x - L.w : scr.x - L.w / 2, ay = L.anchor === 'bottom' ? scr.y - L.h : scr.y;
     const top = topOf();

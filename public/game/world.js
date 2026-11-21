@@ -243,7 +243,11 @@ const gateL = new THREE.Group(), gateR = new THREE.Group();
 gateL.position.set(DOOR_X - 0.52, 0, DOOR_Z); gateR.position.set(DOOR_X + 0.52, 0, DOOR_Z); doorG.add(gateL, gateR);
 const gateMeshes = [rbox(0.5, 0.62, 0.07, C.teal, 0.26, 0.16, 0, gateL, 0.04), rbox(0.5, 0.62, 0.07, C.teal, -0.26, 0.16, 0, gateR, 0.04)];
 rbox(0.36, 0.08, 0.09, C.cream, 0.26, 0.6, 0, gateL, 0.03); rbox(0.36, 0.08, 0.09, C.cream, -0.26, 0.6, 0, gateR, 0.03);
-export const doorSt = { id: 'door', type: 'door', top: V(DOOR_X, 0.62, DOOR_Z), access: [V(DOOR_X, 0, 3.08)], ring: V(DOOR_X, 0, 3.08), swing: 0, meshes: [...gateMeshes, gateL, gateR] };
+// a gate seen end-on (the upright-phone camera) is too thin to tap: an unseen box around it and its mat takes the finger
+const doorPick = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.3, 1.5), new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false }));
+doorPick.material.userData.outlineParameters = { visible: false };
+doorPick.position.set(DOOR_X, 0.65, 3.25); doorG.add(doorPick);
+export const doorSt = { id: 'door', type: 'door', top: V(DOOR_X, 0.62, DOOR_Z), access: [V(DOOR_X, 0, 3.08)], ring: V(DOOR_X, 0, 3.08), swing: 0, meshes: [...gateMeshes, gateL, gateR, doorPick] };
 /** A town exists: the gate appears and becomes a station. */
 export function enableDoor() {
   if (doorG.visible) return;
@@ -819,7 +823,9 @@ export function animateWorld(dt, t, near) {
       : stalled ? ringHtml(1, 'zz', 'stall') : o?.state === 'cooking' ? ringHtml(frac, `#${o.id}`, 'cook') : o?.state === 'testing' ? ringHtml(1, ICON.oven, 'oven')
       : o && ['at_pass', 'merging'].includes(o.state) ? ringHtml(1, ICON.tick, 'done') : ringHtml(0, '', 'free');
     const sub = level === 3 ? `on fire ${mmss(age)}` : level === 2 ? `smoking ${mmss(age)}` : q ? `waiting ${mmss(age)}` : modelName(chef.model);
-    label(`chef${chef.id}`, `<div class="chip" style="--c:${CHEF_COLORS[chef.id] || '#c873d6'}">${icon}<span class="nm"><b>${esc(chef.name)}</b><i>${esc(sub)}</i></span></div>`, world.side ? V(st.stand.x + 0.15, 2.85, st.stand.z) : V(st.stand.x, 3.0, st.stand.z - 0.35), { cls: level ? `lv${level}` : '', pri: level ? 6 + level : 3, click: st.id });
+    // on a phone a chef is a dot of status until they need you (a question, a fire, a stall, a plate up): then the full sign
+    const tiny = world.small && !level && !stalled && !(o && ['at_pass', 'merging'].includes(o.state));
+    label(`chef${chef.id}`, tiny ? `<div class="chip dot" style="--c:${CHEF_COLORS[chef.id] || '#c873d6'}" title="${esc(chef.name)}">${icon}</div>` : `<div class="chip" style="--c:${CHEF_COLORS[chef.id] || '#c873d6'}">${icon}<span class="nm"><b>${esc(chef.name)}</b><i>${esc(sub)}</i></span></div>`, world.side ? V(st.stand.x + 0.15, 2.85, st.stand.z) : V(st.stand.x, 3.0, st.stand.z - 0.35), { cls: (level ? `lv${level}` : '') + (tiny ? ' dot' : ''), pri: level ? 6 + level : 3, click: st.id });
   });
   world.cooking = cooking; world.fires = focus ? 0 : fires; world.smoking = focus ? 0 : S.questions.filter(q => now - q.createdAt >= esca.smokeMs).length;
 
@@ -899,7 +905,7 @@ export function animateWorld(dt, t, near) {
     moveTo(js.mv, held ? 'carry' : 'home', held ? carryWorld : js.home, dt);
     const always = (S.grants || []).includes(js.cls);
     js.halo.material.opacity = always ? 0.75 + Math.sin(t * 4) * 0.2 : 0;
-    if (!held) label(`jar${js.cls}`, `<div class="jr ${always ? 'always' : ''}" style="--c:${js.def.color}">${ICON[js.cls]}</div>`, js.home.clone().add(V(0, 0.62, 0)), { pri: near === js ? 4 : 1, click: js.id });
+    if (!held && (!world.small || near === js || always)) label(`jar${js.cls}`, `<div class="jr ${always ? 'always' : ''}" style="--c:${js.def.color}">${ICON[js.cls]}</div>`, js.home.clone().add(V(0, 0.62, 0)), { pri: near === js ? 4 : 1, click: js.id });
   }
 
   // red string between plates and pots that touch the same files
@@ -930,9 +936,9 @@ export function animateWorld(dt, t, near) {
 }
 export const world = { cooking: 0, fires: 0, smoking: 0, cheer: 0, side: false };
 /** The upright-phone camera looks from the street end: floor lettering would read sideways, and the main crate turns to face it. */
-export function setSide(side) {
-  world.side = side;
-  for (const m of stencils) m.visible = !side;
+export function setSide(side, small = world.small) {
+  world.side = side; world.small = small;
+  for (const m of stencils) m.visible = !side && !small;      // a phone has no room for lettering on the floor
   mainG.rotation.y = side ? -Math.PI / 2 : 0;
 }
 

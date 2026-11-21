@@ -11,7 +11,7 @@ export const touch = { on: false, layout: 'desk' };
 /* ---------- layout: desk, a phone on its side (landscape), or a phone held upright (portrait) ---------- */
 export function layout() {
   const w = innerWidth, h = innerHeight;
-  const m = w < 720 && h > w ? 'portrait' : h < 540 ? 'landscape' : 'desk';
+  const m = w < 820 && h > w ? 'portrait' : h < 540 ? 'landscape' : 'desk';
   touch.layout = m;
   document.body.dataset.layout = m;
   document.body.classList.toggle('narrow', m !== 'desk');
@@ -19,10 +19,10 @@ export function layout() {
   // measured, because the walkthrough's steps add a second row to the HUD on an upright phone
   const hud = Math.round(document.querySelector('.hud').getBoundingClientRect().bottom);
   document.documentElement.style.setProperty('--hud-b', `${hud}px`);      // the visiting banner hangs just under the HUD
-  setSide(m === 'portrait');
+  setSide(m === 'portrait', m !== 'desk');
   setLayout({
-    side: m === 'portrait',
-    pad: m === 'portrait' ? { l: 2, r: 2, t: hud + 2, b: 78 } : m === 'landscape' ? { l: 6, r: 6, t: hud - 6, b: 4 } : { l: 10, r: 10, t: null, b: 8 },
+    side: m === 'portrait', cap: m === 'desk' ? 0 : 5,
+    pad: m === 'portrait' ? { l: 0, r: 0, t: hud - 4, b: 70 } : m === 'landscape' ? { l: 6, r: 6, t: hud - 6, b: 4 } : { l: 10, r: 10, t: null, b: 8 },
   });
   redock();
 }
@@ -44,11 +44,12 @@ addEventListener('touchstart', enable, { once: true, passive: true });
 for (const b of document.querySelectorAll('.pad [data-tk]')) {
   b.addEventListener('pointerdown', e => {
     e.preventDefault();
-    b.classList.add('down'); setTimeout(() => b.classList.remove('down'), 140);
+    b.classList.add('down'); b.dataset.presses = Number(b.dataset.presses || 0) + 1; setTimeout(() => b.classList.remove('down'), 140);
     press(b.dataset.tk);
   });
   b.addEventListener('contextmenu', e => e.preventDefault());
 }
+$('urgentBtn').onclick = () => press('Tab');
 $('menuBtn').onclick = () => { const open = $('tools').classList.toggle('open'); $('menuBtn').setAttribute('aria-expanded', String(open)); };
 $('tools').addEventListener('click', () => $('tools').classList.remove('open'));
 document.addEventListener('pointerdown', e => { if (!e.target.closest('#tools, #menuBtn')) $('tools').classList.remove('open'); });
@@ -79,6 +80,8 @@ export function touchFrame() {
   if ($('tActHint').textContent !== text) $('tActHint').textContent = text;
   $('tAct').classList.toggle('idle', !use);
   $('tAct').classList.toggle('want', !!document.querySelector('.gd.near'));
+  const stats = `${$('mBlocked').textContent} chefs waiting · ${$('mShipped').textContent} shipped · ${$('mSpend').textContent}`;
+  if ($('menuStats').textContent !== stats) $('menuStats').textContent = stats;
   const drop = !!player.carry, call = !!hint('F');
   if ($('tDrop').hidden === drop) $('tDrop').hidden = !drop;
   if ($('tCall').hidden === call) $('tCall').hidden = !call;

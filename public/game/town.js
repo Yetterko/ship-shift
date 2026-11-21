@@ -288,10 +288,16 @@ export const hook = {
   async walkTo(x, z) { if (T.mode !== 'park') return false; const ok = await walkPark(x, z); await sleep(120); return ok; },
   async take(id) {
     if (!(await toPark())) return { ok: false, code: 'far', error: 'Not in the park' };
-    const c = net.cardOf(id); if (!c) return { ok: false, code: 'gone', error: 'No such customer' };
-    const at = c.state === 'backlog' ? c : world().plots[c.plot] || c;       // where they stand, not where they are still walking from
-    await walkPark(at.x, at.z, 1.1);
-    return reach(() => net.take(id));
+    let r = { ok: false, code: 'gone', error: 'No such customer' };
+    for (let i = 0; i < 3; i++) {
+      const c = net.cardOf(id); if (!c) return r;
+      const at = c.state === 'backlog' ? c : world().plots[c.plot] || c;       // where they stand, not where they are still walking from
+      await walkPark(at.x, at.z, 1.1);
+      await sleep(150);
+      r = await reach(() => net.take(id));
+      if (r.ok || r.code !== 'far') break;
+    }
+    return r;
   },
   async put(id, plot) {
     if (plot === null || plot === undefined) return net.put(id, null);

@@ -746,3 +746,40 @@ body[data-layout="landscape"] .lane header small, body[data-layout="landscape"] 
 .startover .resetmsg { min-height: 1.3em; margin-top: 6px; font-weight: 700; color: var(--tomato); }
 /* your own kitchen's walkthrough and urgent button mean nothing in somebody else's */
 body[data-zone="visit"] #quest, body[data-zone="visit"] #tUrgent { display: none; }
+
+/* ======================= phones, slimmed: the kitchen is the screen ======================= */
+.menu-stats, .only-narrow { display: none; }
+.narrow .menu-stats { display: block; margin: 2px 4px 4px; font: 600 11.5px/1.3 var(--body); color: var(--ink-2); max-width: 190px; }
+.narrow .tools .only-narrow { display: flex; }
+.narrow .meters { display: none; }
+.narrow .score { margin-left: auto; }
+/* the walkthrough is five dots and the name of the step you are on */
+body[data-layout="portrait"] .hud { flex-wrap: nowrap; }
+body[data-layout="portrait"] .quest, body[data-layout="landscape"] .quest { order: 0; flex: 0 1 auto; gap: 4px; }
+.narrow .quest ol { height: 26px; padding: 2px 7px; gap: 5px; box-shadow: 0 2px 0 var(--line); }
+.narrow .quest li, .narrow .quest li:not(.cur) { padding: 0; gap: 4px; background: none; animation: none; }
+.narrow .quest li span { width: 9px; height: 9px; font-size: 0; border-width: 2px; }
+.narrow .quest li span svg { display: none; }
+.narrow .quest li.cur span { background: var(--gold); width: 11px; height: 11px; }
+.narrow .quest li.cur b { font-size: 10.5px; }
+.narrow .quest .skip { padding: 5px 8px; font-size: 10.5px; border-width: 2px; }
+/* a short callout */
+.narrow .gd { max-width: 150px; padding: 4px 8px 3px; border-width: 2px; border-radius: 9px; box-shadow: 0 3px 0 var(--line); }
+.narrow .gd b { font-size: 10.5px; line-height: 1.15; } .narrow .gd i { display: none; }
+.narrow .gd::before { width: 10px; height: 10px; margin-left: -5px; top: -7px; border-width: 2px; }
+.narrow .gd.up::before { top: auto; bottom: -7px; }
+.narrow .gd.near kbd { font-size: 10px; padding: 2px 5px; min-width: 0; border-width: 2px; }
+/* a chef is a dot until they need you */
+.chip.dot { padding: 1px; gap: 0; border-width: 2px; box-shadow: 0 2px 0 var(--line); }
+.narrow .chip.dot .ic { width: 20px; height: 20px; font-size: 9px; border-width: 2px; }
+.narrow .chip.dot .ic svg { width: 11px; height: 11px; }
+/* one button */
+.touch .pad { grid-template-columns: 50px 50px; }
+#tCall { grid-area: 1 / 1; } #tDrop { grid-area: 1 / 2; } #tAct { grid-area: 2 / 1 / 3 / 3; }
+.tb.act { width: 107px; height: 60px; }
+.stickhint span { font-size: 9.5px; }
+.stickhint i { width: 52px; height: 52px; } .stickhint i::after { inset: 14px; }
+body[data-layout="portrait"] .card { right: calc(123px + var(--sr)); }
+body[data-layout="landscape"] .tools.open { display: grid; grid-template-columns: auto auto; }
+body[data-layout="landscape"] .menu-stats { grid-column: 1 / 3; max-width: none; }
+body[data-layout="landscape"] .tools .rb { height: 38px; }

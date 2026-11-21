@@ -19,7 +19,6 @@ COPY . .
 ENV NODE_ENV=production \
     SHIP_PUBLIC=1 \
     SHIP_PUBLIC_API=1 \
-    SHIP_WORLD=0 \
     SHIP_SESSIONS_DIR=/tmp/ship-shift/sessions \
     PORT=8080
 EXPOSE 8080

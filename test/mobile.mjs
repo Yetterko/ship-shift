@@ -94,25 +94,39 @@ async function play([name, device]) {
   for (let i = 1; i <= 6; i++) { await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: start.x + i * 9, y: start.y, id: 1 }] }); await sleep(30); }
   await sleep(500);
   await shot('03-thumb-stick');
-  const dash = await page.locator('#tDash').boundingBox();
+  const dash = await page.locator('#tAct').boundingBox();
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: start.x + 54, y: start.y, id: 1 }, { x: Math.round(dash.x + dash.width / 2), y: Math.round(dash.y + dash.height / 2), id: 2 }] });
   await sleep(120);
-  const mid = await ship(() => ({ stick: window.__ship.stick.id !== null, dash: window.__ship.player.dashCool > 0, thumb: !document.getElementById('thumb').hidden }));
+  const mid = await ship(() => ({ stick: window.__ship.stick.id !== null, dash: Number(document.getElementById('tAct').dataset.presses || 0) >= 1, thumb: !document.getElementById('thumb').hidden, x: window.__ship.player.g.position.x, z: window.__ship.player.g.position.z }));
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [{ x: start.x + 54, y: start.y, id: 1 }] });
-  await sleep(300);
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-  await sleep(200);
-  const p1 = await ship(() => ({ x: window.__ship.player.g.position.x, z: window.__ship.player.g.position.z, stick: window.__ship.stick.id }));
-  const moved = portrait ? p1.z - p0.z : p1.x - p0.x;
+  // a second flick straight after the first is a dash. The two flicks are sent back to back, as a thumb would make them.
+  const touchEvent = (type, touchPoints) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints });
+  let dashed = false;
+  for (let attempt = 0; attempt < 3 && !dashed; attempt++) {
+    const sent = [touchEvent('touchEnd', []), touchEvent('touchStart', [{ ...start, id: 3 }])];
+    for (let i = 1; i <= 4; i++) sent.push(touchEvent('touchMove', [{ x: start.x - i * 9, y: start.y, id: 3 }]));
+    await Promise.all(sent);
+    await sleep(60);
+    dashed = await ship(() => window.__ship.player.dashCool > 0);
+  }
+  await touchEvent('touchEnd', []);
+  await sleep(250);
+  const p1 = await ship(() => ({ stick: window.__ship.stick.id }));
+  const moved = portrait ? mid.z - p0.z : mid.x - p0.x;
   ok(mid.stick && mid.thumb && moved > 0.5 && p1.stick === null, `a drag to the right is a thumb stick: the chef walked ${moved.toFixed(1)} to the right of the screen and stopped when the thumb lifted`);
-  ok(mid.dash, 'a second finger pressed Dash while the first held the stick');
+  ok(mid.dash, 'a second finger pressed USE while the first held the stick');
+  ok(dashed, 'a second flick of the stick straight after the first is a dash, so there is no Dash button');
+  // that second finger may have picked up a jar: Put down appears only then, and one tap empties the hands again
+  if (await ship(() => !!window.__ship.player.carry)) { ok(await page.locator('#tDrop').isVisible(), 'USE picked up the jar the chef was standing at, and Put down appeared'); await page.locator('#tDrop').tap(); await page.waitForFunction(() => !window.__ship.player.carry); await sleep(300); }
+  const lean = await ship(() => ({ buttons: document.querySelectorAll('.pad .tb:not([hidden])').length, meters: getComputedStyle(document.querySelector('.meters')).display, pills: document.querySelectorAll('.lbl:not(.hid) .chip:not(.dot)').length }));
+  ok(lean.buttons === 1 && lean.meters === 'none' && lean.pills === 0, 'the screen is the kitchen: one USE button, a clock, a score and a menu, and each idle chef is a dot');
 
   /* ---------- the menu, and a dialog on a narrow screen ---------- */
   await page.locator('#menuBtn').tap();
   await page.waitForSelector('#tools.open');
   await sleep(250);
   await shot('04-menu');
-  ok(await fits('#tools .rb') && (await page.locator('#tools .rb').count()) === 5, 'the menu button opens the board, help, sound, presenter mode and new order');
+  ok(await fits('#tools .rb') && (await page.locator('#tools .rb').count()) === 6 && /shipped/.test(await page.locator('#menuStats').innerText()), 'the menu holds the board, help, sound, presenter mode, new order, most urgent, and the numbers that left the HUD');
   await page.locator('#helpBtn').tap();
   await page.waitForSelector('#help.open');
   await sleep(300);
