@@ -6,9 +6,9 @@
 //   squirtButton(show)     the round button, in the park controls only
 //   stepSquirt(dt)         droplets and drips, from the shell's one animation loop
 //   clearSquirt()          a scene is going away: drop every droplet in it
-// The server passes `splash {to}` on as `splashed { from: name, fromId, dir: { x, z } }` to the target only (REBUILD.md 5.3),
-// when both stand in the same zone within 6 units. The shooter draws the arc and the target dripping on their own screen;
-// the target gets the splat from the side the water came from, and their own avatar drips.
+// The server passes `splash {to}` on as `splashed { from: name, fromId, toId, dir: { x, z } }` to everyone in the zone
+// (REBUILD.md 5.3), when both stand within 6 units. Everyone sees the arc and the target dripping; only the target
+// (toId is its own connId) gets the screen splat, from the side the water came from.
 import { THREE } from './scene.js';
 import { esc, reduceMotion, modal } from './core.js';
 import { send, on, net } from './net.js';
@@ -18,7 +18,7 @@ let opt = null, btn = null, lastShot = 0;
 const drops = [];           // { m, from, to, t, life, kind }
 const dripGeo = new THREE.SphereGeometry(0.07, 8, 6);
 const waterMat = new THREE.MeshBasicMaterial({ color: '#5fb4e6', transparent: true, opacity: 0.9 });
-export const squirt = { shots: 0, hits: 0, splats: 0, last: null };
+export const squirt = { shots: 0, hits: 0, splats: 0, drips: 0, last: null };
 
 export function initSquirt(o) {
   opt = o;
@@ -96,12 +96,16 @@ export function clearSquirt() { for (const d of drops) d.scene.remove(d.m); drop
 /* ---------- being hit ---------- */
 function splashed(m) {
   if (!opt || !m) return;
-  const me = opt.me();
-  // where the shooter stands: back along dir from me, if they are in the peer list use that
-  const src = opt.peers().find(p => p.id === m.fromId) || (me && m.dir ? { x: me.x - m.dir.x * 3, z: me.z - m.dir.z * 3 } : null);
-  if (src && me) arc(src, me);
-  if (me) setTimeout(() => drip(me), FLIGHT * 1000);
-  splat({ fromName: m.from }, src, me);
+  const self = net.welcome?.connId, me = opt.me(), peers = opt.peers();
+  const toId = m.toId ?? self;                     // an older server sent it to the target only, without toId
+  if (m.fromId === self) return;                   // the shooter drew the arc and the drip when firing
+  const at = id => (id === self ? me : peers.find(p => p.id === id));
+  const dst = at(toId);
+  // where the shooter stands: from the peer list, else back along dir from the target
+  const src = at(m.fromId) || (dst && m.dir ? { x: dst.x - m.dir.x * 3, z: dst.z - m.dir.z * 3 } : null);
+  if (src && dst) arc(src, dst);
+  if (dst) { squirt.drips++; setTimeout(() => drip(dst), FLIGHT * 1000); }   // everyone in the zone sees the target drip
+  if (toId === self) splat({ fromName: m.from }, src, me);
 }
 function splat(m, src, me) {
   squirt.splats++;

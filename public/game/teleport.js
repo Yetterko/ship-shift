@@ -94,7 +94,9 @@ export function openDoorPanel() {
   fillPanel();
   panel.querySelector('[data-do="park"]').focus({ preventScroll: true });
 }
-function fillPanel() { const r = panel?.querySelector('#dpRows'); if (r) r.innerHTML = rows(hooks.where().floorId); }
+/** Sets innerHTML only when it changed, so a summary every 2 s never swaps a row out from under a tap. */
+function put(el, html) { if (el && el.dataset.h !== html) { el.innerHTML = html; el.dataset.h = html; } }
+function fillPanel() { put(panel?.querySelector('#dpRows'), rows(hooks.where().floorId)); }
 export function closeDoorPanel() { panel?.remove(); panel = null; }
 export const doorPanelOpen = () => !!panel;
 
@@ -127,11 +129,11 @@ export function openDrawer() {
 function fillDrawer() {
   if (!drawer) return;
   const w = hooks.where(), atHome = w.view === 'floor' && w.floorId === net.homeId;
-  drawer.querySelector('#drPlaces').innerHTML = `
+  put(drawer.querySelector('#drPlaces'), `
     ${net.homeId && !atHome ? '<button type="button" class="sh-btn big" data-do="home">Go home to my kitchen</button>' : ''}
     <button type="button" class="sh-place${w.view === 'park' ? ' here' : ''}" data-do="park">The park</button>
-    <button type="button" class="sh-place${w.view === 'overview' ? ' here' : ''}" data-do="overview">Town overview</button>`;
-  drawer.querySelector('#drRows').innerHTML = rows(w.floorId);
+    <button type="button" class="sh-place${w.view === 'overview' ? ' here' : ''}" data-do="overview">Town overview</button>`);
+  put(drawer.querySelector('#drRows'), rows(w.floorId));
   const foot = drawer.querySelector('#drFoot');
   if (foot.dataset.k !== `${atHome}${!!net.homeId}`) {
     foot.dataset.k = `${atHome}${!!net.homeId}`;

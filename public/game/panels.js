@@ -78,7 +78,7 @@ export function openPanel(key, { keepState = true, force = false } = {}) {
   document.body.classList.add('fl-panel-open');
   if (changed || force) { P.sig = null; P.opened++; P.lastOpenMs = performance.now(); }
   draw(force || changed);
-  if (changed) { emit('sfx', 'open'); P.inner.scrollTop = 0; }
+  if (changed) { emit('sfx', 'open'); requestAnimationFrame(() => { if (P.inner) P.inner.scrollTop = 0; }); }
   emit('panel', key);
   return true;
 }

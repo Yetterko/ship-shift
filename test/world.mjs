@@ -159,7 +159,8 @@ try {
   console.log('the water gun');
   await judge.evaluate(() => window.__ship.travel({ park: true }));
   await spec.evaluate(() => window.__ship.travel({ park: true }));
-  await until(async () => (await S(judge)).mounted === 'park' && (await S(spec)).mounted === 'park', 5000, 'both in the park');
+  await player.evaluate(() => window.__ship.travel({ park: true }));       // a bystander in the same zone
+  await until(async () => (await S(judge)).mounted === 'park' && (await S(spec)).mounted === 'park' && (await S(player)).mounted === 'park', 6000, 'all three in the park');
   await judge.evaluate(() => { const P = window.__ship.park; P.placeMe(0, 4); P.me.r = 0; });     // facing +z
   await spec.evaluate(() => { const P = window.__ship.park; P.placeMe(0.3, 7); });
   await until(() => judge.evaluate(() => window.__ship.park.parkProbe().peers >= 1), 4000, 'the judge to see the spectator');
@@ -171,6 +172,10 @@ try {
   const seen = await until(() => spec.evaluate(() => { const e = document.querySelector('.sh-splat'); return e && { text: e.querySelector('p')?.textContent, pe: getComputedStyle(e).pointerEvents }; }), 4000, 'the splat');
   ok(/Splashed by Guest/.test(seen.text), `A splashes B: B's page shows the splat (${seen.text})`);
   ok(seen.pe === 'none', 'the splat never blocks taps');
+  const by = await player.evaluate(() => ({ drips: window.__ship.squirt.drips, splat: !!document.querySelector('.sh-splat') }));
+  ok(by.drips >= 1 && !by.splat, 'a bystander in the zone sees the target drip, without the splat');
+  await player.evaluate(() => window.__ship.goHome());
+  await until(async () => (await S(player)).owner === '1', 6000, 'the player home again');
   await shot(spec, 'world-splat');
   await sleep(2800);
   ok(!(await spec.$('.sh-splat')), 'the splat fades away');

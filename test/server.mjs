@@ -518,11 +518,16 @@ test('presence and the water gun: peers per zone; splash only close by, rate lim
   a.send('splash', { to: b.conn.id });
   assert.equal(b.out.filter(m => m.type === 'splashed').length, 1);
   assert.deepEqual(b.last('splashed').dir, { x: 0.6, z: 0.8 });
-  assert.equal(a.out.filter(m => m.type === 'splashed').length, 0, 'only the target hears it');
+  const seen = a.last('splashed');
+  assert.deepEqual({ fromId: seen.fromId, toId: seen.toId }, { fromId: a.conn.id, toId: b.conn.id }, 'everyone in the zone hears it, with the target named');
+  assert.equal(far.out.filter(m => m.type === 'splashed').length, 1, 'the whole zone, even out of range');
+  const elsewhere = client(g); elsewhere.conn.subscribed = 'some-floor';
+  a.send('splash', { to: b.conn.id });
+  assert.equal(elsewhere.out.filter(m => m.type === 'splashed').length, 0, 'another zone does not');
   a.send('splash', { to: b.conn.id });
   assert.equal(b.out.filter(m => m.type === 'splashed').length, 1, '1 a second per sender');
   a.send('splash', { to: far.conn.id });
-  assert.equal(far.out.filter(m => m.type === 'splashed').length, 0, 'too far');
+  assert.ok(!far.out.some(m => m.type === 'splashed' && m.toId === far.conn.id), 'too far');
   clock.t += 2000;
   a.send('splash', { to: b.conn.id });
   assert.equal(b.out.filter(m => m.type === 'splashed').length, 2);

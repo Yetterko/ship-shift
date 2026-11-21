@@ -38,10 +38,11 @@ export function relay(conns, now, state) {
 
 /**
  * The water gun. Allowed when both stand in the same zone within about 6 units; 1 a second per sender,
- * and a short cooldown per target. Only the target hears it. No score, no other effect.
+ * and a short cooldown per target. Everyone in the zone hears it (so all see the target drip); the client shows the
+ * splash overlay only when toId is its own connId. No score, no other effect.
  * @returns {string|null} a refusal reason, or null when it was sent
  */
-export function splash(from, to, now) {
+export function splash(from, to, now, conns = [to]) {
   if (!to || to === from || !to.open) return 'gone';
   if (!from.pos || !to.pos || zoneOf(from) !== zoneOf(to) || from.pos.zone !== zoneOf(from) || to.pos.zone !== zoneOf(to)) return 'far';
   const dx = to.pos.x - from.pos.x, dz = to.pos.z - from.pos.z, d = Math.hypot(dx, dz);
@@ -50,6 +51,8 @@ export function splash(from, to, now) {
   if (now - (to.splashedAt || 0) < SPLASH_TARGET_COOLDOWN_MS) return 'cooldown';
   from.splashAt = now; to.splashedAt = now;
   const dir = d ? { x: Math.round((dx / d) * 1000) / 1000, z: Math.round((dz / d) * 1000) / 1000 } : { x: 0, z: 1 };
-  to.send({ type: 'splashed', from: from.name, fromId: from.id, dir });
+  const msg = { type: 'splashed', from: from.name, fromId: from.id, toId: to.id, dir };
+  const zone = zoneOf(to);
+  for (const c of conns) if (c.open && zoneOf(c) === zone) c.send(msg);
   return null;
 }

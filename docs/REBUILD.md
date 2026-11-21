@@ -1,6 +1,6 @@
 # Ship Shift rebuild plan
 
-> **Contract status (builder 1, live; core loop, Live via the mock, Pomodoro and scoring all green: `node test/server.mjs`, `node test/agents.mjs`).** `shared/protocol.js`, `shared/types.js`, `shared/hunks.js` and `shared/fixtures.js` are final for this round; `node server/index.mjs` serves the client, `/shared/*`, `/content/*` (fixtures import `content/orders.mjs`), health, admin and the full WebSocket protocol of section 5, with the Demo kitchen working end to end. Changes against the first draft of section 5, all additive: `welcome` also carries `liveOpen`, `queuePosition` and `defaults.live` / `defaults.demo` (each `{ gracePeriodMs, maxWorkMs, ranges }`); `FloorLine` carries `modelLabel`; an action can also be refused `shift_over` or `no_floor`; a follow-up quick pick has `followUp: true`; the water gun (`splash` / `splashed`) is added; `notify liveOff`, the `no_key` refusal and the snapshot's `demoReason` are added; an ended shift frees its live slot. `npm run check` is `node server/check.mjs` (syntax check of server, shared, content, test, public, tools, template-project). Tests start a server with `startServer(env)` from `test/helpers/server.mjs` (resolves `{ url, port, stop }`) and fake the API with `test/helpers/mock-anthropic.mjs`.
+> **Contract status (builder 1, live; core loop, Live via the mock, Pomodoro and scoring all green: `node test/server.mjs`, `node test/agents.mjs`).** `shared/protocol.js`, `shared/types.js`, `shared/hunks.js` and `shared/fixtures.js` are final for this round; `node server/index.mjs` serves the client, `/shared/*`, `/content/*` (fixtures import `content/orders.mjs`), health, admin and the full WebSocket protocol of section 5, with the Demo kitchen working end to end. Changes against the first draft of section 5, all additive: `welcome` also carries `liveOpen`, `queuePosition` and `defaults.live` / `defaults.demo` (each `{ gracePeriodMs, maxWorkMs, ranges }`); `FloorLine` carries `modelLabel`; an action can also be refused `shift_over` or `no_floor`; a follow-up quick pick has `followUp: true`; the water gun (`splash`, and `splashed` to the whole zone with `toId`) is added; `notify liveOff`, the `no_key` refusal and the snapshot's `demoReason` are added; an ended shift frees its live slot. `npm run check` is `node server/check.mjs` (syntax check of server, shared, content, test, public, tools, template-project). Tests start a server with `startServer(env)` from `test/helpers/server.mjs` (resolves `{ url, port, stop }`) and fake the API with `test/helpers/mock-anthropic.mjs`.
 
 Branch `spec-rework`, worktree `C:\Users\Shane\ship-shift-spec`. `docs/SPEC.md` (revision 3) is the requirements. `docs/plan.md`, `docs/town-plan.md`, `docs/town-protocol.md` and `docs/town-integration.md` describe the old prototype and are superseded by this file.
 
@@ -374,7 +374,7 @@ Every message is JSON with `type`.
 | `unsubscribe` | `{}` | Back to the park and overview |
 | `action` | `{ seq, name, args }` | Answered by `ack` with the same `seq`. Owner only |
 | `p` | `{ x, z, r }` | Avatar position in the current zone, at most 10 a second |
-| `splash` | `{ to }` | The water gun. `to` is the target's `connId` (the `id` in `peers`). Sent on only when both stand in the same zone (the park, or the same floor) within 6 units of each other's last `p`; 1 a second per sender, 1.5 s cooldown per target; otherwise dropped silently. No score or other effect |
+| `splash` | `{ to }` | The water gun. `to` is the target's `connId` (the `id` in `peers`). Sent on only when both stand in the same zone (the park, or the same floor) within 6 units of each other's last `p`; 1 a second per sender, 1.5 s cooldown per target; otherwise dropped silently. Answered by `splashed` to the whole zone. No score or other effect |
 
 Actions and their `args`:
 
@@ -408,7 +408,7 @@ Any action while a forced break is due answers `must_break` (except `startBreak`
 | `peers` | `{ zone, peers: [{ id, name, look, role, x, z, r }] }`: 5 a second, only to zones with more than one connection; at most 30 |
 | `notify` | `{ kind, floorId, customerId?, mealId?, table?, text }`: kinds `mealReady`, `feedbackReady`, `callBack`, `burnt`, `stoveWait`, `budgetSpent`, `slotFree`, `mustBreak`, `shipped`, `floorClosed`, `liveOff` (the owner asked for Live and got Demo: no key, or no slot or budget on Play again; `text` says which). To the owner wherever they are; `shipped` and `floorClosed` also to watchers |
 | `ack` | `{ seq, ok, code?, message? }` |
-| `splashed` | `{ from: name, fromId: connId, dir: { x, z } }`: to the target only; `dir` is the unit vector from the shooter to the target |
+| `splashed` | `{ from: name, fromId: connId, toId: connId, dir: { x, z } }`: to everyone in the zone, so all see the target drip; the client shows the splash overlay only when `toId` is its own `connId`. `dir` is the unit vector from the shooter to the target |
 | `error` | `{ code, message }`: `bad_message`, `no_slot` (with `options: ['demo', 'visit', 'queue']`), `no_floor`, `full`, `rate` |
 
 A zone is the subscribed `floorId`, or `park` when not subscribed.

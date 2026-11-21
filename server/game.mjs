@@ -150,7 +150,7 @@ export async function createGame({ config, now = Date.now, client = null, showca
       flush();
     },
     p(conn, body) { move(conn, body, now()); },
-    splash(conn, { to }) { splash(conn, roles.conns.get(to), now()); },
+    splash(conn, { to }) { splash(conn, roles.conns.get(to), now(), [...roles.conns.values()]); },
   };
 
   function message(conn, msg) {

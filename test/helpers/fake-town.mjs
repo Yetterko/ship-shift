@@ -135,12 +135,12 @@ export async function startFakeTown({ liveMax = 60, judgeMax = 6, seed = 5, buil
         case 'action': send(c, 'ack', { seq: m.seq, ...action(c, m.name, m.args || {}) }); break;
         case 'p': c.pos = { x: +m.x || 0, z: +m.z || 0, r: +m.r || 0 }; break;
         case 'splash': {
-          // as the real server: same zone, within 6 units, then `splashed` to the target only
+          // as the real server: same zone, within 6 units, then `splashed` to the whole zone
           const zone = c.sub || 'park', to = [...conns].find(x => x.id === m.to);
           if (!to || to === c || (to.sub || 'park') !== zone || !c.pos || !to.pos) break;
           const dx = to.pos.x - c.pos.x, dz = to.pos.z - c.pos.z, d = Math.hypot(dx, dz);
           if (d > 6) break;
-          send(to, 'splashed', { from: c.name, fromId: c.id, dir: { x: d ? dx / d : 0, z: d ? dz / d : 1 } });
+          for (const x of conns) if ((x.sub || 'park') === zone) send(x, 'splashed', { from: c.name, fromId: c.id, toId: to.id, dir: { x: d ? dx / d : 0, z: d ? dz / d : 1 } });
           break;
         }
         case 'joinQueue': case 'leaveQueue': break;
