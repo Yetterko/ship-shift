@@ -5,7 +5,7 @@ services:
   - type: web
     name: ship-shift
     runtime: docker
-    plan: starter            # paid and always on: a free instance sleeps, and a cold start in front of judges looks broken
+    plan: free               # switch to starter (paid, always on) if you want no cold starts
     numInstances: 1
     dockerfilePath: ./Dockerfile
     dockerContext: .
