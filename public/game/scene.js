@@ -17,12 +17,15 @@ const params = new URLSearchParams(location.search);
 // A phone starts one rung down the ladder (smaller shadow map): its screen is small and its GPU is not a laptop's.
 export const mobile = matchMedia('(pointer: coarse)').matches || /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
 const MAX_PIXEL_RATIO = mobile ? 1.25 : 1.5;
-export const quality = { pr: Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO), level: mobile ? 1 : 0, outline: true, fps: 60, lost: false, mobile, fixed: !!navigator.webdriver || params.get('quality') === 'high' };
+export const quality = { pr: Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO), level: mobile ? 1 : 0, outline: true, fps: 60, lost: false, mobile, fixed: params.get('quality') === 'high' };
+if (params.get('ol') === '0') quality.outline = false;
+if (params.get('pr')) quality.pr = Number(params.get('pr'));
 if (params.get('quality') === 'low') { quality.pr = 1; quality.level = 2; quality.outline = false; quality.fixed = true; }
-export const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+export const renderer = new THREE.WebGLRenderer({ antialias: params.get('aa') === '1', powerPreference: 'high-performance' });
 renderer.setPixelRatio(quality.pr);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = params.get('sh') === 'pcf' ? THREE.PCFShadowMap : params.get('sh') === 'soft' ? THREE.PCFSoftShadowMap : params.get('sh') === 'basic' ? THREE.BasicShadowMap : THREE.PCFShadowMap;
+if (params.get('sh') === 'off') renderer.shadowMap.enabled = false;
 // Shadows are static: only the room and its furniture cast them, and the map is drawn once when a scene is built (shadowsDirty()).
 // The people and the things that move carry a soft blob under them instead, so no frame pays for a second pass over the scene.
 renderer.shadowMap.autoUpdate = false;
@@ -295,17 +298,18 @@ export function render() { if (quality.lost) return; if (quality.outline) effect
 /* ---------- frame rate: measured every second; a slow machine gives up pixels, then shadow detail, then outlines ---------- */
 // One second windows, one window of grace for shader compiles, and a frame rate far below the bar takes several rungs at
 // once: a phone that draws 12 frames a second is on its feet in two or three seconds, not half a minute.
-let qSince = performance.now(), qFrames = 0, qWarm = 1;
+let qSince = performance.now(), qFrames = 0, qWarm = 1, qFast = 0;
+// Dynamic resolution first: the picture gets a little softer before anything disappears. The floor of 0.6 still reads
+// fine with the outlines; only a machine that cannot hold 30 there loses shadow detail, outlines and shadows, in that order.
+const MIN_PR = 0.6, MAX_PR = quality.pr, TARGET = 34;
+function setPr(pr) { pr = Math.round(pr * 100) / 100; if (pr === quality.pr) return false; quality.pr = pr; renderer.setPixelRatio(pr); resize(); return true; }
 function down(fps) {
-  // Pixels first, then shadow detail. Outlines, shadows and a soft picture only go when it cannot hold 30, so a phone
-  // that the system caps at 30 frames keeps its outlines.
-  if (quality.pr > 1) { quality.pr = Math.max(1, quality.pr - 0.25); renderer.setPixelRatio(quality.pr); resize(); }
-  else if (quality.level === 0) { quality.level = 1; for (const l of shadowLights) { l.shadow.mapSize.set(1024, 1024); l.shadow.map?.dispose(); l.shadow.map = null; } shadowsDirty(); }
-  else if (quality.level === 1 && fps < 27) { quality.level = 2; quality.outline = false; }
-  else if (quality.level === 2 && fps < 26) { quality.level = 3; for (const l of shadowLights) l.castShadow = false; }
-  else if (quality.level === 3 && fps < 24) { quality.level = 4; quality.pr = 0.75; renderer.setPixelRatio(quality.pr); resize(); }
-  else return false;
-  return true;
+  if (quality.pr > MIN_PR) return setPr(Math.max(MIN_PR, quality.pr * Math.sqrt(Math.max(0.3, fps / TARGET)) * 0.95));
+  if (quality.level === 0) { quality.level = 1; for (const l of shadowLights) { l.shadow.mapSize.set(1024, 1024); l.shadow.map?.dispose(); l.shadow.map = null; } shadowsDirty(); return true; }
+  if (quality.level === 1 && fps < 28) { quality.level = 2; quality.outline = false; return true; }
+  if (quality.level === 2 && fps < 26) { quality.level = 3; for (const l of shadowLights) l.castShadow = false; return true; }
+  if (quality.level === 3 && fps < 24) { quality.level = 4; return setPr(0.5); }
+  return false;
 }
 const shadowLights = [key];
 export const addShadowLight = l => { shadowLights.push(l); };
@@ -317,9 +321,11 @@ export function adapt() {
   if (span > 2500) return;                       // the tab was in the background
   quality.fps = Math.round(fps);
   if (qWarm > 0) { qWarm--; return; }            // the first second compiles shaders
-  if (quality.fixed || document.hidden || fps >= 42) return;
-  const steps = fps < 15 ? 3 : fps < 24 ? 2 : 1;
-  for (let i = 0; i < steps && down(fps); i++);
+  if (quality.fixed || document.hidden) return;
+  if (fps < 30) { qFast = 0; down(fps); return; }
+  // Headroom: three fast seconds in a row buy some sharpness back, up to where it started.
+  if (fps >= 52 && quality.pr < MAX_PR) { if (++qFast >= 3) { qFast = 0; setPr(Math.min(MAX_PR, quality.pr + 0.1)); } }
+  else qFast = 0;
 }
 export const drawCalls = () => renderer.info.render.calls;
 export function toScreen(pos, out = {}) {
