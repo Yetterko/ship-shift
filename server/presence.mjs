@@ -2,6 +2,8 @@
 // and the water gun: a splash between two avatars standing close together in the same zone.
 
 export const zoneOf = conn => conn.subscribed || 'park';
+/** A message already turned into JSON (game.mjs gives every connection sendRaw); a bare test connection gets the object. */
+const sendText = (c, text, msg = null) => (c.sendRaw ? c.sendRaw(text) : c.send(msg ?? JSON.parse(text)));
 const MAX_PEERS = 30;
 const SPLASH_RANGE = 6, SPLASH_EVERY_MS = 1000, SPLASH_TARGET_COOLDOWN_MS = 1500;
 
@@ -30,8 +32,9 @@ export function relay(conns, now, state) {
     if (!full && !list.some(c => c.moved)) continue;
     const peers = list.filter(c => c.pos && c.pos.zone === zone).slice(0, MAX_PEERS)
       .map(c => ({ id: c.id, name: c.name, look: c.look, role: c.role, x: c.pos.x, z: c.pos.z, r: c.pos.r }));
-    const msg = { type: 'peers', zone, peers };
-    for (const c of list) c.send(msg);
+    // one JSON string per zone, not one per listener: a busy park is 30 listeners five times a second
+    const text = JSON.stringify({ type: 'peers', zone, peers });
+    for (const c of list) sendText(c, text);
   }
   for (const c of conns) c.moved = false;
 }
@@ -51,8 +54,8 @@ export function splash(from, to, now, conns = [to]) {
   if (now - (to.splashedAt || 0) < SPLASH_TARGET_COOLDOWN_MS) return 'cooldown';
   from.splashAt = now; to.splashedAt = now;
   const dir = d ? { x: Math.round((dx / d) * 1000) / 1000, z: Math.round((dz / d) * 1000) / 1000 } : { x: 0, z: 1 };
-  const msg = { type: 'splashed', from: from.name, fromId: from.id, toId: to.id, dir };
+  const msg = { type: 'splashed', from: from.name, fromId: from.id, toId: to.id, dir }, text = JSON.stringify(msg);
   const zone = zoneOf(to);
-  for (const c of conns) if (c.open && zoneOf(c) === zone) c.send(msg);
+  for (const c of conns) if (c.open && zoneOf(c) === zone) sendText(c, text, msg);
   return null;
 }

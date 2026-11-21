@@ -2,7 +2,7 @@
 // Where things are is the client's business; what they are is the server's (the snapshot in F.snap).
 // Layout (spec section 2): Customers queue outside the left wall, two tables in the dining room, the ticket rail and the
 // Pass on one long counter, four Stations and two Chefs along the top wall, the front door on the right wall, the TV by it.
-import { THREE, V, scene, toon, flat, add, rbox, cyl, ball, plane, blob, canvasTex, spawn, confetti, label, popup, shake, disposeTree, clearLabels, clearParticles } from './scene.js';
+import { THREE, V, scene, toon, flat, add, rbox, cyl, ball, plane, blob, canvasTex, spawn, confetti, label, popup, shake, disposeTree, clearLabels, clearParticles, mergeStatic, noCast, shadowsDirty } from './scene.js';
 import { character, customerChar, waiterChar, pose, kick, mover, moveTo, spring } from './characters.js';
 import { esc, emit, reduceMotion } from './core.js';
 
@@ -311,6 +311,10 @@ export function buildFloor() {
   F.waiter = Object.assign(w, { path: null, moving: false, dash: 0, dashCool: 0, vx: 0, vz: 0, speed: 6.2, hold: false });
   w.g.position.set(0.2, 0, 0.3);
   F.booted = false;
+  // what moves casts no shadow into the static map; the rest of the room becomes a few dozen meshes
+  noCast(leaf);
+  mergeStatic(root);
+  shadowsDirty();
   return root;
 }
 
@@ -327,7 +331,7 @@ function ticketMesh(item, size) {
   if (item.redoCount) { const d = cyl(0.05, 0.05, 0.02, C.red, 0.09, 0.04, 0.02, g, 10); d.rotation.x = Math.PI / 2; d.castShadow = false; }
   rbox(0.07, 0.07, 0.05, SIZE_COLOR[size] || C.steelDark, 0, 0.4, 0, g, 0.01);
   g.rotation.x = -0.3;
-  return g;
+  return noCast(g);
 }
 function plateMesh(seed, look) {
   const g = new THREE.Group();
@@ -339,7 +343,7 @@ function plateMesh(seed, look) {
     ball(0.07, '#57b86a', 0.09, 0.2, 0.03, g, 8); ball(0.05, '#fff1d6', -0.07, 0.19, -0.05, g, 8);
     if (look === 'approved') { const flag = rbox(0.03, 0.34, 0.03, C.woodDark, -0.02, 0.1, 0, g, 0.01); rbox(0.2, 0.13, 0.02, '#57b86a', 0.08, 0.32, 0, g, 0.01); flag.castShadow = false; }
   }
-  return g;
+  return noCast(g);
 }
 const hash = s => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; };
 function freeIndex(map, n) { const used = new Set(map.values()); for (let i = 0; i < n; i++) if (!used.has(i)) return i; return -1; }

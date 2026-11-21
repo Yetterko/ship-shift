@@ -1,14 +1,16 @@
 // The people: one chunky toon body that chefs, customers, the Waiter and visitors all share, plus the spring that makes things squash.
-import { THREE, V, scene, toon, flat, rbox, cyl, ball, capsule, blob } from './scene.js';
+import { THREE, V, scene, toon, flat, rbox, cyl, ball, capsule, blob, noCast, mergeStatic } from './scene.js';
 import { reduceMotion } from './core.js';
 
 const C = { ink: '#3a241c', cream: '#fff1d6' };
+// eyes and feet are the outline's own colour: an outline pass over them draws nothing anyone can see
+const INK = toon(C.ink, { outline: false });
 
 export function character({ body = '#fffaf0', apron = null, hat = true, skin = '#f3c9a0', band = null, hair = null, scale = 1.3, scarf = null, parent = scene }) {
   const g = new THREE.Group(), inner = new THREE.Group(); g.add(inner);
   const tint = [], skinned = [];
   const shadow = blob(1.15, 1.15, 0, 0, g);
-  const feet = [-1, 1].map(s => { const f = ball(0.11, C.ink, 0.15 * s, 0.07, 0.03, inner, 10); f.scale.set(1, 0.65, 1.4); return f; });
+  const feet = [-1, 1].map(s => { const f = ball(0.11, INK, 0.15 * s, 0.07, 0.03, inner, 10); f.scale.set(1, 0.65, 1.4); return f; });
   const torso = capsule(0.31, 0.2, body, 0, 0.5, 0, inner);
   if (apron) { tint.push(rbox(0.44, 0.4, 0.1, apron, 0, 0.2, 0.25, inner, 0.05)); rbox(0.2, 0.14, 0.03, C.cream, 0, 0.3, 0.3, inner, 0.02); }
   if (scarf) { const s = cyl(0.27, 0.3, 0.1, scarf, 0, 0.72, 0, inner, 16); s.castShadow = false; tint.push(s); }
@@ -16,7 +18,7 @@ export function character({ body = '#fffaf0', apron = null, hat = true, skin = '
   const headParts = inner.children.length;
   const head = ball(0.36, skin, 0, 1.08, 0, inner, 24);
   const eyes = [-1, 1].map(s => {
-    const e = ball(0.068, C.ink, 0.135 * s, 1.1, 0.318, inner, 12); e.scale.set(1, 1.3, 0.55); e.castShadow = false;
+    const e = ball(0.068, INK, 0.135 * s, 1.1, 0.318, inner, 12); e.scale.set(1, 1.3, 0.55); e.castShadow = false;
     const hl = ball(0.026, flat('#ffffff'), 0.135 * s + 0.022, 1.14, 0.352, inner, 8); hl.castShadow = false;
     return [e, hl];
   });
@@ -30,7 +32,10 @@ export function character({ body = '#fffaf0', apron = null, hat = true, skin = '
   } else if (hair) { const hr = ball(0.365, hair, 0, 1.15, -0.055, inner, 18); hr.scale.set(1.02, 0.92, 1); }
   // everything from the neck up tips back a little, so faces read from a camera that looks down
   for (const m of inner.children.slice(headParts).filter(m => !hands.includes(m))) { m.position.y -= 0.78; hg.add(m); }
+  // the parts of the head that never move on their own (cheeks, the hat) become one mesh per material
+  mergeStatic(hg, new Set([head, ...eyes.flat(), ...tint]));
   g.scale.setScalar(scale);
+  noCast(g);   // people move: their shadow is the blob under them, not the static shadow map
   parent.add(g);
   skinned.push(head, ...hands);
   return { g, inner, hg, head, hands, feet, eyes, torso, shadow, tint, skinned, squash: 0, squashV: 0, phase: Math.random() * 6, blink: 2 + Math.random() * 3, scale };

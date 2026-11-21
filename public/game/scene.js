@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { OutlineEffect } from 'three/addons/effects/OutlineEffect.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { $, fx, reduceMotion, clamp } from './core.js';
 
 export { THREE };
@@ -11,16 +12,23 @@ export const stage = $('stage');
 function hostFor(id, cls) { let el = $(id); if (!el) { el = document.createElement('div'); el.id = id; el.className = cls; stage.append(el); } return el; }
 
 // Sharp enough on a retina laptop without drawing four times the pixels: the ratio is capped, and adapt() lowers it when frames run slow.
+// A phone's screen is small and dense: 1.25 looks as sharp at arm's length and draws about 30% fewer pixels than 1.5.
 const params = new URLSearchParams(location.search);
-const MAX_PIXEL_RATIO = 1.5;
 // A phone starts one rung down the ladder (smaller shadow map): its screen is small and its GPU is not a laptop's.
 export const mobile = matchMedia('(pointer: coarse)').matches || /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+const MAX_PIXEL_RATIO = mobile ? 1.25 : 1.5;
 export const quality = { pr: Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO), level: mobile ? 1 : 0, outline: true, fps: 60, lost: false, mobile, fixed: !!navigator.webdriver || params.get('quality') === 'high' };
 if (params.get('quality') === 'low') { quality.pr = 1; quality.level = 2; quality.outline = false; quality.fixed = true; }
 export const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(quality.pr);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// Shadows are static: only the room and its furniture cast them, and the map is drawn once when a scene is built (shadowsDirty()).
+// The people and the things that move carry a soft blob under them instead, so no frame pays for a second pass over the scene.
+renderer.shadowMap.autoUpdate = false;
+export const shadowsDirty = () => { renderer.shadowMap.needsUpdate = true; };
+/** Something that moves: it casts no shadow into the static map (its blob is its shadow). */
+export const noCast = o => { o.traverse(m => { m.castShadow = false; }); return o; };
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.18;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -65,7 +73,7 @@ export function toon(color, { map = null, emissive = null, emissiveIntensity = 1
 export function flat(color, { map = null, transparent = false, opacity = 1, depthWrite = true, side = THREE.FrontSide, unique = false, toneMapped = true } = {}) {
   const make = () => {
     const m = new THREE.MeshBasicMaterial({ color, map, transparent, opacity, depthWrite, side, toneMapped });
-    m.userData.outlineParameters = NO_OUTLINE; return m;
+    m.userData.outlineParameters = NO_OUTLINE; if (unique) m.userData.unique = true; return m;
   };
   if (unique) return make();
   const id = `f${color}${map?.uuid || ''}${transparent}${opacity}${depthWrite}${side}${toneMapped}`;
@@ -84,7 +92,8 @@ export function add(geometry, material, x = 0, y = 0, z = 0, parent = scene, sha
 /** Rounded box standing on y. */
 export function rbox(w, h, d, material, x = 0, y = 0, z = 0, parent = scene, r = 0.07) {
   const rr = Math.min(r, w / 2 - 0.001, h / 2 - 0.001, d / 2 - 0.001);
-  return add(geo(`rb${w},${h},${d},${rr}`, () => new RoundedBoxGeometry(w, h, d, 3, rr)), material, x, y + h / 2, z, parent);
+  // two segments per rounded edge: at this camera distance three look the same and cost twice the triangles
+  return add(geo(`rb${w},${h},${d},${rr}`, () => new RoundedBoxGeometry(w, h, d, 2, rr)), material, x, y + h / 2, z, parent);
 }
 export const cyl = (rt, rb, h, material, x, y, z, parent, seg = 20) => add(geo(`cy${rt},${rb},${h},${seg}`, () => new THREE.CylinderGeometry(rt, rb, h, seg)), material, x, y + h / 2, z, parent);
 export const ball = (r, material, x, y, z, parent, seg = 18) => add(geo(`sp${r},${seg}`, () => new THREE.SphereGeometry(r, seg, Math.max(8, Math.round(seg * 0.7)))), material, x, y, z, parent);
@@ -92,6 +101,40 @@ export const capsule = (r, len, material, x, y, z, parent) => add(geo(`ca${r},${
 export function plane(w, d, material, x, y, z, parent = scene) {
   const m = new THREE.Mesh(geo(`pl${w},${d}`, () => new THREE.PlaneGeometry(w, d)), material);
   m.rotation.x = -Math.PI / 2; m.position.set(x, y, z); parent.add(m); return m;
+}
+
+/**
+ * Merges the meshes directly under root that never move, change or answer a tap into one mesh per material, so a room
+ * of a few hundred boxes is a few dozen draw calls. Left alone: groups, anything tagged in userData (tap, ground),
+ * meshes with a material of their own (they fade or glow), and anything invisible. keep: more meshes to leave alone.
+ */
+export function mergeStatic(root, keep = new Set()) {
+  root.updateMatrix();
+  const buckets = new Map();
+  for (const m of [...root.children]) {
+    if (!m.isMesh || m.children.length || !m.visible || keep.has(m) || Object.keys(m.userData).length || Array.isArray(m.material) || m.material.userData.unique) continue;
+    const k = `${m.material.uuid}|${m.castShadow}|${m.receiveShadow}|${m.renderOrder}`;
+    (buckets.get(k) || buckets.set(k, []).get(k)).push(m);
+  }
+  let merged = 0;
+  for (const list of buckets.values()) {
+    if (list.length < 2) continue;
+    const geos = list.map(m => {
+      m.updateMatrix();
+      let g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
+      for (const a of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(a)) g.deleteAttribute(a);
+      g.morphAttributes = {};
+      return g.applyMatrix4(m.matrix);
+    });
+    const g = mergeGeometries(geos, false);
+    for (const x of geos) x.dispose();
+    if (!g) continue;
+    const one = new THREE.Mesh(g, list[0].material); one.userData.merged = true;
+    Object.assign(one, { castShadow: list[0].castShadow, receiveShadow: list[0].receiveShadow, renderOrder: list[0].renderOrder });
+    for (const m of list) root.remove(m);
+    root.add(one); merged += list.length;
+  }
+  return merged;
 }
 
 /* ---------- canvas textures ---------- */
@@ -232,6 +275,7 @@ export function addScene(name, s) { scenes[name] = s; }
 /** Switches what is drawn. follow: the bounds of a place the camera should follow the player across, or null to fit the kitchen. */
 export function setScene(name, { follow = null } = {}) {
   active = scenes[name] || scene;
+  shadowsDirty();
   view.follow = follow; view.wide = false;
   solveFit(); view.snap = true;
   for (const L of labels.values()) L.w = 0;
@@ -248,25 +292,34 @@ export const isFollowing = () => !!view.follow;
 renderer.info.autoReset = false;
 export function render() { if (quality.lost) return; if (quality.outline) effect.render(active, camera); else renderer.render(active, camera); }
 
-/* ---------- frame rate: measured every two seconds; a slow machine gives up pixels, then shadow detail, then outlines ---------- */
-let qSince = performance.now(), qFrames = 0, qWarm = 2;
-export function adapt() {
-  qFrames++;
-  const now = performance.now(), span = now - qSince;
-  if (span < 2000) return;
-  const fps = qFrames * 1000 / span; qSince = now; qFrames = 0;
-  if (span > 4000) return;                       // the tab was in the background
-  quality.fps = Math.round(fps);
-  if (qWarm > 0) { qWarm--; return; }            // the first seconds compile shaders
-  if (quality.fixed || document.hidden || fps >= 42) return;
+/* ---------- frame rate: measured every second; a slow machine gives up pixels, then shadow detail, then outlines ---------- */
+// One second windows, one window of grace for shader compiles, and a frame rate far below the bar takes several rungs at
+// once: a phone that draws 12 frames a second is on its feet in two or three seconds, not half a minute.
+let qSince = performance.now(), qFrames = 0, qWarm = 1;
+function down(fps) {
   // Pixels first, then shadow detail. Outlines, shadows and a soft picture only go when it cannot hold 30, so a phone
   // that the system caps at 30 frames keeps its outlines.
   if (quality.pr > 1) { quality.pr = Math.max(1, quality.pr - 0.25); renderer.setPixelRatio(quality.pr); resize(); }
-  else if (quality.level === 0) { quality.level = 1; key.shadow.mapSize.set(1024, 1024); key.shadow.map?.dispose(); key.shadow.map = null; }
+  else if (quality.level === 0) { quality.level = 1; for (const l of shadowLights) { l.shadow.mapSize.set(1024, 1024); l.shadow.map?.dispose(); l.shadow.map = null; } shadowsDirty(); }
   else if (quality.level === 1 && fps < 27) { quality.level = 2; quality.outline = false; }
-  else if (quality.level === 2 && fps < 26) { quality.level = 3; key.castShadow = false; }
+  else if (quality.level === 2 && fps < 26) { quality.level = 3; for (const l of shadowLights) l.castShadow = false; }
   else if (quality.level === 3 && fps < 24) { quality.level = 4; quality.pr = 0.75; renderer.setPixelRatio(quality.pr); resize(); }
-  qWarm = 1;
+  else return false;
+  return true;
+}
+const shadowLights = [key];
+export const addShadowLight = l => { shadowLights.push(l); };
+export function adapt() {
+  qFrames++;
+  const now = performance.now(), span = now - qSince;
+  if (span < 1000) return;
+  const fps = qFrames * 1000 / span; qSince = now; qFrames = 0;
+  if (span > 2500) return;                       // the tab was in the background
+  quality.fps = Math.round(fps);
+  if (qWarm > 0) { qWarm--; return; }            // the first second compiles shaders
+  if (quality.fixed || document.hidden || fps >= 42) return;
+  const steps = fps < 15 ? 3 : fps < 24 ? 2 : 1;
+  for (let i = 0; i < steps && down(fps); i++);
 }
 export const drawCalls = () => renderer.info.render.calls;
 export function toScreen(pos, out = {}) {
@@ -276,16 +329,21 @@ export function toScreen(pos, out = {}) {
 }
 
 /* ---------- particles ---------- */
-const parts = [];
+const parts = [], spare = [];
 /** Removes every particle at once: the scene they were in is going away. */
-export function clearParticles() { for (const p of parts) { scene.remove(p.m); p.m.material.dispose(); } parts.length = 0; }
+export function clearParticles() { for (const p of parts) { scene.remove(p.m); p.m.material.dispose(); } parts.length = 0; for (const m of spare) m.material.dispose(); spare.length = 0; }
 const pGeo = { puff: new THREE.SphereGeometry(0.09, 8, 6), bit: new THREE.BoxGeometry(0.09, 0.025, 0.06), flame: new THREE.ConeGeometry(0.11, 0.3, 7), star: new THREE.OctahedronGeometry(0.07) };
 export function spawn(kind, pos, color, { n = 1, spread = 0.15, up = 0.9, out = 0.3, life = 1.2, size = 1, grow = 0.6, gravity = 0, opacity = 0.85 } = {}) {
   if (reduceMotion) n = Math.min(n, 2);
   if (parts.length > 320) n = Math.min(n, 1);     // a busy kitchen never piles up more smoke than a laptop can draw
   if (quality.level > 0) n = Math.ceil(n * 0.6);
   for (let i = 0; i < n; i++) {
-    const m = new THREE.Mesh(pGeo[kind] || pGeo.puff, flat(Array.isArray(color) ? color[i % color.length] : color, { transparent: true, opacity, unique: true, depthWrite: false }));
+    // a spent particle's mesh and material are used again: smoke every tenth of a second allocates nothing
+    const c = Array.isArray(color) ? color[i % color.length] : color;
+    let m = spare.pop();
+    if (m) { m.geometry = pGeo[kind] || pGeo.puff; m.material.color.set(c); m.rotation.set(0, 0, 0); }
+    else m = new THREE.Mesh(pGeo[kind] || pGeo.puff, flat(c, { transparent: true, opacity, unique: true, depthWrite: false }));
+    m.material.opacity = opacity;
     m.position.copy(pos); m.position.x += (Math.random() - 0.5) * spread; m.position.z += (Math.random() - 0.5) * spread;
     m.scale.setScalar(size * (0.8 + Math.random() * 0.4)); m.renderOrder = 3;
     scene.add(m);
@@ -301,7 +359,7 @@ export function stepParticles(dt) {
     p.m.scale.setScalar(p.s * (1 + p.grow * f));
     if (p.spin) { p.m.rotation.x += dt * p.spin; p.m.rotation.z += dt * p.spin * 0.7; }
     p.m.material.opacity = p.o * Math.max(0, 1 - f * f);
-    if (p.t >= p.life) { scene.remove(p.m); p.m.material.dispose(); parts.splice(i, 1); }
+    if (p.t >= p.life) { scene.remove(p.m); if (spare.length < 200) spare.push(p.m); else p.m.material.dispose(); parts.splice(i, 1); }
   }
 }
 
@@ -313,11 +371,12 @@ export const nextFrame = () => { renderer.info.reset(); return ++frameNo; };
 /** pri: higher wins a collision. anchor: 'top' hangs the label below its point instead of above it. */
 export function label(key, html, pos, { cls = '', pri = 1, click = null, anchor = 'bottom' } = {}) {
   let L = labels.get(key);
-  if (!L) { const el = document.createElement('div'); host.append(el); L = { el, html: null, cls: null, pos: V(), w: 0, h: 0 }; labels.set(key, L); }
+  if (!L) { const el = document.createElement('div'); host.append(el); L = { el, html: null, cls: null, click: undefined, pos: V(), w: 0, h: 0, x: NaN, y: NaN }; labels.set(key, L); }
   const c = `lbl ${cls}${click ? ' click' : ''}`;
   if (L.html !== html) { L.el.innerHTML = html; L.html = html; L.w = 0; }
   if (L.cls !== c) { L.el.className = c; L.cls = c; L.w = 0; }
-  if (click) L.el.dataset.goto = click; else delete L.el.dataset.goto;
+  // the same value written every frame is still a DOM write: only a change touches the element
+  if (L.click !== click) { L.click = click; if (click) L.el.dataset.goto = click; else delete L.el.dataset.goto; }
   L.pos.copy(pos); L.seen = frameNo; L.pri = pri; L.anchor = anchor;
 }
 /** Removes every label at once (a scene is being unmounted). */
@@ -350,7 +409,8 @@ export function placeLabels() {
     L.el.classList.toggle('hid', !ok);
     if (!ok) continue;
     taken.push(r);
-    L.el.style.transform = `translate(${Math.round(r.x)}px,${Math.round(r.y)}px)`;
+    const x = Math.round(r.x), y = Math.round(r.y);
+    if (x !== L.x || y !== L.y) { L.x = x; L.y = y; L.el.style.transform = `translate(${x}px,${y}px)`; }
   }
 }
 

@@ -8,7 +8,7 @@
 //   groundAt(clientX, clientY)     the point of lawn under the pointer
 //   onEnter(fn)                    fn(floorLine) when you walk onto a doormat
 //   disposePark()                  removes everything it built
-import { THREE, V, toon, flat, add, rbox, cyl, ball, capsule, plane, blob, canvasTex, addScene, setScene, updateCamera, placeLabels, render, label, renderer, camera, quality } from './scene.js';
+import { THREE, V, toon, flat, add, rbox, cyl, ball, capsule, plane, blob, canvasTex, addScene, setScene, updateCamera, placeLabels, render, label, renderer, camera, quality, mergeStatic, noCast, shadowsDirty, addShadowLight, disposeTree } from './scene.js';
 import { clamp, esc } from './core.js';
 import { lookOf, peerList } from './presence.js';
 
@@ -21,7 +21,7 @@ sun.position.set(-9, 18, 10); sun.castShadow = true;
 sun.shadow.mapSize.set(quality.level >= 1 ? 1024 : 2048, quality.level >= 1 ? 1024 : 2048);
 Object.assign(sun.shadow.camera, { left: -30, right: 30, top: 20, bottom: -20, near: 2, far: 60 });
 sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.04;
-parkScene.add(sun);
+parkScene.add(sun); addShadowLight(sun);
 
 const PLOT_W = 4.5, MAT_IN = 0.7, SPEED = 5.2, DOOR_R = 0.75;
 export const PLOTS = 24;
@@ -64,7 +64,7 @@ function person(look, role, parent) {
   if (role === 'spectator') cyl(0.3, 0.3, 0.07, toon('#3a241c'), 0, 1.5, 0, g);          // a flat cap
   else { cyl(0.2, 0.22, 0.24, toon('#fffaf0'), 0, 1.5, 0, g); ball(0.25, toon(role === 'judge' ? '#ffd75e' : '#fffaf0'), 0, 1.8, 0, g); }
   blob(0.95, 0.95, 0, 0, g);
-  parent.add(g); return g;
+  noCast(g); parent.add(g); return g;
 }
 
 export function buildPark({ w = 40, h = 18 } = {}, who = {}) {
@@ -101,6 +101,7 @@ export function buildPark({ w = 40, h = 18 } = {}, who = {}) {
     const lot = plane(3.7, 3.3, toon('#a9d79b', { outline: false }), p.x + ox * 2.7, 0.014, p.z + oz * 2.7, root);
     if (ox) lot.rotation.z = Math.PI / 2;
   }
+  mergeStatic(root);   // lawn, paths, fountain, trees, benches and lots: a handful of draw calls
   me.g = person(me.look, me.role, root);
   const ring = plane(1.3, 1.3, flat('#ffffff', { transparent: true, opacity: 0.55, depthWrite: false, map: ringTex() }), 0, 0.03, 0, me.g); ring.renderOrder = 2;
   setScene('park', { follow: { x0: -hw - 3.2, x1: hw + 3.2, z0: -hh - 4.6, z1: hh + 3.4, top: 3.4 } });
@@ -122,10 +123,11 @@ function makeBuilding(p, f) {
   if (tall > 2) { rbox(0.8, 0.7, 0.1, toon('#9fd8f2'), -1.15, 1.0, 1.56, g, 0.04); rbox(0.8, 0.7, 0.1, toon('#9fd8f2'), 1.15, 1.0, 1.56, g, 0.04); }
   const mat = rbox(1.3, 0.05, 0.9, toon('#c9503b', { outline: false }), 0, 0.01, 2.2, g, 0.02); mat.castShadow = false;
   const lamp = ball(0.17, flat('#57b86a', { unique: true }), 0.75, Math.min(tall - 0.25, 1.9), 1.62, g, 12);
-  root.add(g);
+  mergeStatic(g);
+  root.add(g); shadowsDirty();
   return { g, lamp, floorId: f.id, mode: null, tall };
 }
-function dropBuilding(b) { root?.remove(b.g); b.lamp.material.dispose(); }
+function dropBuilding(b) { root?.remove(b.g); b.lamp.material.dispose(); b.g.traverse(o => { if (o.userData.merged) o.geometry.dispose(); }); shadowsDirty(); }
 
 /** floors: FloorLine[] from the `building` message. */
 export function syncBuildings(floors = [], homeId = park.homeId) {
@@ -217,9 +219,9 @@ export function drawPark(dt) {
 
 export function disposePark() {
   if (!park.built) return;
-  for (const [, b] of buildings) dropBuilding(b);
   buildings.clear(); avatars.clear();
-  if (root) parkScene.remove(root);
+  // the GPU gets its memory back: merged meshes, the lawn's texture and every building are freed, not just unhooked
+  if (root) disposeTree(root);
   root = null; me.g = null; goal = null; hotPlot = null;
   park.built = false;
 }
