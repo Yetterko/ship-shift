@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roster</title>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 2rem auto; max-width: 1100px; padding: 0 1rem; color: #1f2933; background: #faf7f2; }
+  h1 { margin: 0; }
+  .sub { color: #52606d; margin: .25rem 0 1.25rem; }
+  table { border-collapse: collapse; width: 100%; background: #fff; }
+  th, td { border: 1px solid #e4ddd0; padding: .5rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #2f6f62; color: #fff; font-weight: 600; }
+  small { display: block; font-weight: 400; opacity: .75; }
+  .num { text-align: right; white-space: nowrap; }
+  .shift { white-space: nowrap; }
+  #warnings { color: #b42318; font-weight: 600; padding-left: 1.2rem; }
+</style>
+</head>
+<body>
+<h1 id="cafe">Roster</h1>
+<p class="sub" id="week"></p>
+<ul id="warnings"></ul>
+<table id="roster"></table>
+<p><a href="/timesheet.csv">Download the timesheet (CSV)</a></p>
+<script type="module">
+const el = (tag, text, cls) => {
+  const node = document.createElement(tag);
+  if (text != null) node.textContent = text;
+  if (cls) node.className = cls;
+  return node;
+};
+const row = cells => { const tr = el('tr'); tr.append(...cells); return tr; };
+const money = n => `$${n.toFixed(2)}`;
+
+const view = await (await fetch('/api/roster')).json();
+document.title = `${view.cafe} roster`;
+document.getElementById('cafe').textContent = `${view.cafe} roster`;
+document.getElementById('week').textContent = `Week of ${view.weekStart}: ${view.total.hours} hours, ${money(view.total.pay)} in wages`;
+document.getElementById('warnings').append(...view.warnings.map(text => el('li', text)));
+
+const head = el('thead'), body = el('tbody');
+const dayHeading = day => { const th = el('th', day.name); th.append(el('small', day.date.slice(5))); return th; };
+head.append(row([el('th', 'Staff'), ...view.days.map(dayHeading), el('th', 'Hours', 'num'), el('th', 'Pay', 'num')]));
+for (const person of view.rows) {
+  const name = el('td', person.name);
+  name.append(el('small', person.role));
+  const days = person.days.map(shifts => {
+    const td = el('td');
+    for (const shift of shifts) {
+      const line = el('div', `${shift.start} to ${shift.end}`, 'shift');
+      line.append(el('small', `${shift.hours} h, ${money(shift.pay)}`));
+      td.append(line);
+    }
+    return td;
+  });
+  body.append(row([name, ...days, el('td', String(person.hours), 'num'), el('td', money(person.pay), 'num')]));
+}
+document.getElementById('roster').append(head, body);
+</script>
+</body>
+</html>

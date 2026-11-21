@@ -1,0 +1,36 @@
+{
+  "cafe": "Little Wattle",
+  "weekStart": "2026-12-21",
+  "staff": [
+    { "id": "mia", "name": "Mia Tran", "role": "Supervisor, barista", "rate": 34.5 },
+    { "id": "ben", "name": "Ben Okafor", "role": "Barista", "rate": 30 },
+    { "id": "sol", "name": "Sol Marino", "role": "Cook", "rate": 32 },
+    { "id": "ava", "name": "Ava Lindqvist", "role": "Kitchen hand", "rate": 27.5 },
+    { "id": "raj", "name": "Raj Patel", "role": "Front of house", "rate": 29 }
+  ],
+  "shifts": [
+    { "staffId": "mia", "date": "2026-12-21", "start": "06:00", "end": "14:00" },
+    { "staffId": "ben", "date": "2026-12-21", "start": "07:00", "end": "15:00" },
+    { "staffId": "sol", "date": "2026-12-21", "start": "06:30", "end": "14:30" },
+    { "staffId": "raj", "date": "2026-12-21", "start": "10:00", "end": "16:00" },
+    { "staffId": "mia", "date": "2026-12-22", "start": "06:00", "end": "14:00" },
+    { "staffId": "sol", "date": "2026-12-22", "start": "06:30", "end": "14:30" },
+    { "staffId": "ava", "date": "2026-12-22", "start": "08:00", "end": "13:00" },
+    { "staffId": "raj", "date": "2026-12-22", "start": "10:00", "end": "16:00" },
+    { "staffId": "ben", "date": "2026-12-23", "start": "06:00", "end": "16:00" },
+    { "staffId": "sol", "date": "2026-12-23", "start": "06:30", "end": "14:30" },
+    { "staffId": "ava", "date": "2026-12-23", "start": "08:00", "end": "13:00" },
+    { "staffId": "ben", "date": "2026-12-24", "start": "06:00", "end": "14:00" },
+    { "staffId": "sol", "date": "2026-12-24", "start": "06:30", "end": "14:30" },
+    { "staffId": "mia", "date": "2026-12-24", "start": "12:00", "end": "20:00" },
+    { "staffId": "ava", "date": "2026-12-24", "start": "11:00", "end": "15:00" },
+    { "staffId": "ava", "date": "2026-12-24", "start": "14:00", "end": "18:00" },
+    { "staffId": "raj", "date": "2026-12-24", "start": "16:00", "end": "00:30" },
+    { "staffId": "mia", "date": "2026-12-26", "start": "07:00", "end": "13:00" },
+    { "staffId": "sol", "date": "2026-12-26", "start": "07:00", "end": "13:00" },
+    { "staffId": "raj", "date": "2026-12-26", "start": "08:00", "end": "14:00" },
+    { "staffId": "ben", "date": "2026-12-27", "start": "07:00", "end": "13:00" },
+    { "staffId": "sol", "date": "2026-12-27", "start": "07:00", "end": "13:00" },
+    { "staffId": "ava", "date": "2026-12-27", "start": "08:00", "end": "12:00" }
+  ]
+}

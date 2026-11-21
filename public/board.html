@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ship Shift</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bungee&family=JetBrains+Mono:wght@400;600&family=Rubik:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">SHIP <span>SHIFT</span></div>
+  <div class="shift" id="shift">
+    <div class="clock"><small id="shiftMode">Kitchen idle</small><b id="shiftClock">25:00</b></div>
+    <div class="shift-controls">
+      <label>Focus <input id="focusMin" type="number" min="1" max="90" value="25"></label>
+      <label>Break <input id="breakMin" type="number" min="1" max="30" value="5"></label>
+      <button class="btn" id="shiftBtn" type="button">Start shift</button>
+    </div>
+  </div>
+  <div class="meters">
+    <div class="meter"><small>Score</small><b id="mScore">0</b></div>
+    <div class="meter" id="mBlockedBox"><small>Agents waiting on you</small><b id="mBlocked">0s</b></div>
+    <div class="meter"><small>Shipped</small><b id="mShipped">0</b></div>
+    <div class="meter"><small>Spend</small><b id="mSpend">$0.00</b></div>
+    <button class="iconbtn" id="soundBtn" type="button" aria-pressed="true">Sound on</button>
+  </div>
+</header>
+
+<div class="banner" id="banner" hidden></div>
+
+<main class="kitchen">
+  <section class="rail" aria-label="Orders">
+    <div class="section-head">
+      <h2>Order rail</h2>
+      <span class="hint">Drag a ticket onto a chef, or click a ticket and then a chef.</span>
+      <button class="btn small" id="newOrderBtn" type="button">New order</button>
+    </div>
+    <div class="tickets" id="tickets"></div>
+  </section>
+
+  <section class="line" aria-label="Chefs">
+    <div class="section-head"><h2>The line</h2><span class="hint" id="driverHint"></span></div>
+    <div class="stations" id="stations"></div>
+  </section>
+
+  <section class="pass" aria-label="The pass">
+    <div class="section-head"><h2>The pass</h2><span class="hint">Review before it ships.</span></div>
+    <div class="plates" id="plates"></div>
+    <h3 class="sub">Served</h3>
+    <div class="served" id="served"></div>
+  </section>
+</main>
+
+<dialog id="orderDialog">
+  <form method="dialog" id="orderForm" class="dlg">
+    <h2>New order</h2>
+    <label>What needs doing <input id="oTitle" required maxlength="120" placeholder="Overtime pay for long shifts"></label>
+    <label>Details for the chef <textarea id="oBody" rows="5" placeholder="Acceptance criteria, files, edge cases"></textarea></label>
+    <fieldset class="sizes"><legend>Size</legend>
+      <label><input type="radio" name="oSize" value="S"> Small</label>
+      <label><input type="radio" name="oSize" value="M" checked> Medium</label>
+      <label><input type="radio" name="oSize" value="L"> Large</label>
+    </fieldset>
+    <div class="row"><button class="btn" value="ok" type="submit">Put it on the rail</button><button class="btn ghost" value="cancel" type="button" id="orderCancel">Cancel</button></div>
+  </form>
+</dialog>
+
+<dialog id="reviewDialog" class="review">
+  <div class="dlg">
+    <div class="review-head">
+      <div><small id="rEyebrow"></small><h2 id="rTitle"></h2></div>
+      <button class="iconbtn" id="rClose" type="button">Close</button>
+    </div>
+    <div class="review-meta" id="rMeta"></div>
+    <details id="rSummaryBox" open><summary>Chef's summary</summary><pre id="rSummary" class="prose"></pre></details>
+    <details id="rTestsBox"><summary id="rTestsLabel">Tests</summary><pre id="rTests" class="out"></pre></details>
+    <div class="diff" id="rDiff"></div>
+    <label class="fb">Feedback for the chef (needed to send it back)<textarea id="rComment" rows="3" placeholder="The overtime threshold should be per shift, not per day"></textarea></label>
+    <div class="row">
+      <button class="btn ship" id="rShip" type="button">Ship it: merge to main</button>
+      <button class="btn danger" id="rBack" type="button">Send it back</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="reportDialog">
+  <div class="dlg">
+    <small id="repEyebrow">Focus block over</small>
+    <h2 id="repTitle">Shift report</h2>
+    <div class="report" id="repBody"></div>
+    <div class="row"><button class="btn" id="repClose" type="button">Run the pass</button></div>
+  </div>
+</dialog>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

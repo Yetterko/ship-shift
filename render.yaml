@@ -1,0 +1,19 @@
+# Render blueprint: one free Docker web service running Ship Shift's public demo mode.
+# Render sets PORT itself and the server listens on it.
+services:
+  - type: web
+    name: ship-shift
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeploy: false
+    envVars:
+      - key: SHIP_PUBLIC
+        value: "1"
+      # A free instance has 512 MB and a slice of a CPU, so it holds fewer kitchens than a laptop.
+      - key: SHIP_MAX_SESSIONS
+        value: "10"
+      - key: SHIP_IDLE_MIN
+        value: "15"

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ship Shift</title>
+<link rel="stylesheet" href="/game.css">
+<script type="importmap">{ "imports": { "three": "/vendor/three.module.js", "three/addons/": "/vendor/addons/" } }</script>
+</head>
+<body class="game">
+<div class="stage" id="stage">
+  <div class="vignette"></div>
+  <div class="labels" id="labels"></div>
+  <div class="pops" id="pops"></div>
+
+  <header class="hud">
+    <div class="brand">SHIP<span>SHIFT</span></div>
+    <button class="pill clock" id="clockBtn" type="button" title="Shift settings"><small id="shiftMode">Start a shift</small><b id="shiftClock">25:00</b></button>
+    <div class="pill score" id="scoreBox" title="Score and streak"><span class="star" data-icon="star"></span><b id="mScore">0</b><i id="mStreak">×1.0</i></div>
+    <div class="meters">
+      <span class="m" id="mBlockedBox" title="Time your chefs have spent waiting on you"><span data-icon="wait"></span><b id="mBlocked">0:00</b></span>
+      <span class="m" title="Shipped to main"><span data-icon="plate"></span><b id="mShipped">0</b></span>
+      <span class="m" title="Spend"><span data-icon="coin"></span><b id="mSpend">$0.00</b></span>
+    </div>
+    <div class="tools">
+      <button class="rb" id="newOrderBtn" type="button" title="New order" aria-label="New order" data-icon="plus"></button>
+      <button class="rb" id="soundBtn" type="button" title="Sound" aria-label="Sound" aria-pressed="true" data-icon="sound"></button>
+      <a class="rb" href="/board.html" title="List view" aria-label="List view" data-icon="list"></a>
+    </div>
+  </header>
+  <div class="popover" id="shiftPop" hidden>
+    <label>Focus <input id="focusMin" type="number" min="1" max="90" value="25"> min</label>
+    <label>Break <input id="breakMin" type="number" min="1" max="30" value="5"> min</label>
+    <button class="btn" id="shiftBtn" type="button">Start shift</button>
+  </div>
+
+  <div class="card quiet" id="card">
+    <div id="cardBody"></div>
+    <form id="lineForm" hidden autocomplete="off"><input id="lineInput" maxlength="300" aria-label="One line"><kbd>Enter</kbd></form>
+  </div>
+
+  <aside class="review" id="review" aria-label="Review at the pass">
+    <div class="review-head">
+      <div><small id="rEyebrow"></small><h2 id="rTitle"></h2></div>
+      <button class="rb" id="rClose" type="button" title="Close (Esc)" aria-label="Close">×</button>
+    </div>
+    <div class="review-meta" id="rMeta"></div>
+    <details id="rSummaryBox"><summary>Chef's summary</summary><pre id="rSummary" class="prose"></pre></details>
+    <details id="rTestsBox"><summary id="rTestsLabel">Tests</summary><pre id="rTests" class="out"></pre></details>
+    <div class="diff" id="rDiff" tabindex="-1"></div>
+    <div class="review-foot">
+      <div class="hints"><span class="k"><kbd>J</kbd><kbd>K</kbd>next / previous hunk</span><span class="seenpill" id="rSeen"></span></div>
+      <textarea id="rComment" rows="2" placeholder="B: write what to fix, then Enter sends it back"></textarea>
+      <div class="row">
+        <button class="btn ship" id="rApprove" type="button"><kbd>Enter</kbd> Approve</button>
+        <button class="btn danger" id="rBack" type="button">Send back</button>
+        <button class="btn ghost" id="rCold" type="button" hidden>Cold: send back to merge main</button>
+        <button class="btn ghost right" id="rBin" type="button">Bin the order</button>
+      </div>
+    </div>
+  </aside>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+</div>
+
+<dialog id="orderDialog">
+  <form method="dialog" id="orderForm" class="dlg">
+    <h2>New order</h2>
+    <label>What needs doing <input id="oTitle" required maxlength="120" placeholder="Overtime pay for long shifts"></label>
+    <label>Details for the chef <textarea id="oBody" rows="5" placeholder="Acceptance criteria, files, edge cases"></textarea></label>
+    <fieldset class="sizes"><legend>Size</legend>
+      <label><input type="radio" name="oSize" value="S"> Small</label>
+      <label><input type="radio" name="oSize" value="M" checked> Medium</label>
+      <label><input type="radio" name="oSize" value="L"> Large</label>
+    </fieldset>
+    <div class="row"><button class="btn" value="ok" type="submit">Send in the customer</button><button class="btn ghost" value="cancel" type="button" id="orderCancel">Cancel</button></div>
+  </form>
+</dialog>
+
+<dialog id="reportDialog">
+  <div class="dlg report-dlg">
+    <small>Shift over</small>
+    <h2 id="repTitle">Shift report</h2>
+    <div class="stars" id="repStars"></div>
+    <p class="advice" id="repAdvice"></p>
+    <div class="report" id="repBody"></div>
+    <div class="row"><button class="btn" id="repClose" type="button">Run the pass</button></div>
+  </div>
+</dialog>
+
+<script src="/game.js" type="module"></script>
+</body>
+</html>
