@@ -124,9 +124,12 @@ export function inputFrame(dt) {
   const K = I.keys;
   dir.set((K.has('d') || K.has('arrowright') ? 1 : 0) - (K.has('a') || K.has('arrowleft') ? 1 : 0), 0, (K.has('s') || K.has('arrowdown') ? 1 : 0) - (K.has('w') || K.has('arrowup') ? 1 : 0));
   const pos = w.g.position;
+  // the thumb stick on a touch screen walks the same way the keys do, a little slower when barely pushed
+  const byStick = !dir.lengthSq() && stick.active && stick.mag > 0.15;
+  if (byStick) dir.set(stick.x, 0, stick.z);
   if (dir.lengthSq()) {
     w.path = null; dir.normalize();
-    const sp = w.speed * (w.dash > 0 ? 2.2 : 1) * dt;
+    const sp = w.speed * (w.dash > 0 ? 2.2 : 1) * (byStick ? 0.45 + 0.55 * stick.mag : 1) * dt;
     const nx = pos.x + dir.x * sp, nz = pos.z + dir.z * sp;
     if (!blocked(nx, pos.z)) pos.x = nx;
     if (!blocked(pos.x, nz)) pos.z = nz;
@@ -158,7 +161,9 @@ function face(w, dx, dz, dt) {
   w.g.rotation.y += diff * Math.min(1, dt * 16);
 }
 
+import { stick, initStick } from './stick.js';
 export function initInput() {
+  initStick();
   const add = (t, ev, fn, o) => { t.addEventListener(ev, fn, o); I.off.push(() => t.removeEventListener(ev, fn, o)); };
   const cv = renderer.domElement;
   add(cv, 'pointerdown', onDown); add(cv, 'pointerup', onUp);

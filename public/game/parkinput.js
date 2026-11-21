@@ -14,8 +14,10 @@ let offs = [], signFn = null, useFn = null;
 const typing = e => /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName || '') || e.target?.isContentEditable;
 function listen(target, type, fn, opts) { target.addEventListener(type, fn, opts); offs.push(() => target.removeEventListener(type, fn, opts)); }
 
+import { stick, initStick } from './stick.js';
 export function initParkInput({ onSign = null, onUse = null } = {}) {
   stopParkInput();
+  initStick();
   signFn = onSign; useFn = onUse;
   const canvas = stage.querySelector('canvas');
   listen(canvas, 'pointerdown', e => {
@@ -41,6 +43,7 @@ export function initParkInput({ onSign = null, onUse = null } = {}) {
 export function parkMove() {
   mv.x = (keys.has('d') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('a') || keys.has('ArrowLeft') ? 1 : 0);
   mv.z = (keys.has('s') || keys.has('ArrowDown') ? 1 : 0) - (keys.has('w') || keys.has('ArrowUp') ? 1 : 0);
+  if (!mv.x && !mv.z && stick.active && stick.mag > 0.15) { mv.x = stick.x; mv.z = stick.z; }   // the thumb stick
   return mv;
 }
 export function stopParkInput() { for (const off of offs) off(); offs = []; keys.clear(); signFn = useFn = null; }
