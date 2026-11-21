@@ -1,5 +1,5 @@
-# Ship Shift in public demo mode: a private kitchen per visitor. The chefs are simulated unless ANTHROPIC_API_KEY is set,
-# in which case they are Claude Haiku through the Messages API (SHIP_PUBLIC_API=1 below), with file tools only and no shell.
+# Ship Shift in public demo mode: a private kitchen per visitor, with simulated chefs. When ANTHROPIC_API_KEY is set
+# (and SHIP_PUBLIC_API=1, below) Claude Haiku gives the chefs a voice: short lines of text, with no tools. It does none of the work.
 FROM node:22-slim
 
 # The kitchens are real git repos with real worktrees and merges.
@@ -10,7 +10,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY package.json package-lock.json ./
 # The Agent SDK is only ever loaded by a real chef on your own machine. Public mode has none, so it is removed from the image
-# outright. The API SDK (@anthropic-ai/sdk) stays: the API chefs use it.
+# outright. The API SDK (@anthropic-ai/sdk) stays: the chefs' voices use it.
 RUN npm ci --omit=dev \
  && rm -rf node_modules/@anthropic-ai/claude-agent-sdk \
  && npm cache clean --force

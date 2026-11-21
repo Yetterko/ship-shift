@@ -295,14 +295,15 @@ async function mainPublic() {
   delete process.env.SHIP_RESET_TOKEN;
   const resetToken = givenToken.length >= 8 ? givenToken : crypto.randomBytes(9).toString('base64url');
   // Nothing a public kitchen starts (test runs, git) inherits the owner's Claude credentials.
-  // With SHIP_PUBLIC_API=1 and a key, the chefs are API chefs: Claude Haiku through the Messages API, with six tools and no shell.
+  // With SHIP_PUBLIC_API=1 and a key, the chefs get a voice: Claude Haiku writes their chatter and rephrases their summaries.
+  // The simulated chef still does every edit, test run and merge. The model has no tools, and its words are only displayed.
   // The key is held here and nowhere else. It is taken out of the environment with the rest, so no test run can read it.
   const apiKey = process.env.SHIP_PUBLIC_API === '1' ? String(process.env.ANTHROPIC_API_KEY || '').trim() : '';
   const apiBase = process.env.ANTHROPIC_BASE_URL || '';
   for (const key of Object.keys(process.env)) if (/^(ANTHROPIC_|CLAUDE_)/i.test(key)) delete process.env[key];
   const dollars = (v, d) => (Number(v) >= 0 && v !== undefined && v !== '' ? Number(v) : d);
   const apiChefs = apiKey ? apiKitchens({
-    apiKey, baseURL: apiBase, testCmd: 'npm test',
+    apiKey, baseURL: apiBase, lineEveryMs: Number(process.env.SHIP_VOICE_EVERY_S) >= 0 && process.env.SHIP_VOICE_EVERY_S ? Number(process.env.SHIP_VOICE_EVERY_S) * 1000 : undefined,
     budgetUsd: dollars(process.env.SHIP_BUDGET_USD, 100), kitchenBudgetUsd: dollars(process.env.SHIP_KITCHEN_BUDGET_USD, 1.5), orderBudgetUsd: dollars(process.env.SHIP_ORDER_BUDGET_USD, 0.4),
   }) : null;
   if (apiChefs) await apiChefs.ready;
@@ -413,7 +414,7 @@ async function mainPublic() {
         ...(apiDriver ? { budget: () => apiDriver.budget() } : {}),
         pace: PACE, focusMin: 3, breakMin: 1, grace: DEMO_GRACE, restart: RESTART, hireCost: HIRE_COST,
       });
-      // Never the Agent SDK: a public kitchen's chefs are simulated, or API chefs with no shell.
+      // Never the Agent SDK: a public kitchen's chefs are simulated, with or without a voice from the API.
       if (![kitchen.driver, kitchen.hireDriver, ...kitchen.chefs.map(c => c.driver)].every(d => d === simDriver || (apiDriver && d === apiDriver))) throw new Error('A public kitchen may only have simulated or API chefs');
       await kitchen.init();
       let timers = [], open = false, pending = null;
@@ -696,7 +697,7 @@ async function mainPublic() {
   console.log(`Ship Shift public kitchen open on http://${HOST}:${PORT} (this machine: http://localhost:${PORT})`);
   console.log(`  each visitor gets a private kitchen with its own demo repo under ${sessionsDir}`);
   console.log(`  kitchens: at most ${max} at once, closed and deleted after ${idleMin} idle minute${idleMin === 1 ? '' : 's'}`);
-  if (apiChefs?.enabled()) console.log(`  chefs:    ${API_MODEL} through the Messages API: ${crew.chefs.map(c => c.name).join(', ')}. Budget $${apiChefs.left().toFixed(2)} for the town; a kitchen or order that reaches its cap cooks simulated. Agent SDK chefs are off in public mode`);
+  if (apiChefs?.enabled()) console.log(`  chefs:    simulated: ${crew.chefs.map(c => c.name).join(', ')}, with a voice from ${API_MODEL} (text only, no tools). Voice budget $${apiChefs.left().toFixed(2)} for the town; past a cap the chefs use their own words. Real agents are off in public mode`);
   else console.log(`  chefs:    simulated, free: ${crew.chefs.map(c => c.name).join(', ')}. Real agents are off in public mode, whatever the environment says`);
   console.log(`  pace:     ${PACE}x; ${WORLD ? 'customers arrive by bus in the park' : 'orders walk up once a visitor\'s page opens'}; the shift is 3 minutes`);
   if (WORLD) {

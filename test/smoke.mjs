@@ -207,9 +207,10 @@ try {
     try {
       const settle = async (o, what) => {
         const end = Date.now() + 40000;
-        o.merge = null;
         while (Date.now() < end && !(o.state === 'at_pass' && o.merge)) { for (const q of [...k.questions]) k.answer(q.id, q.kind === 'question' ? { allow: true, answers: Object.fromEntries(q.questions.map(x => [x.question, x.options[0].label])) } : { allow: false, message: 'No' }); await sleep(80); }
         if (o.state !== 'at_pass' || !o.merge) throw new Error(`Timed out waiting for ${what}: ${o.state} ${o.error || ''}`);
+        // A merge check that started before this arrival can still be finishing, so the pass is read once more before it is judged.
+        await k.refreshPass();
       };
       const ot = k.addOrder(STARTER_ORDERS.find(x => x.title === 'Overtime after 8 hours'));
       const sun = k.addOrder(STARTER_ORDERS.find(x => x.title === 'Sunday penalty rate'));
