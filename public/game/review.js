@@ -19,6 +19,7 @@ export function renderMeal(el, S, id) {
   if (!m) { el.innerHTML = `<div class="fl-head"><h2>Served</h2></div><p>This Meal has left the Pass.</p>`; return; }
   const item = S.items[m.itemId] || {}, def = stationDef(item.station), cu = customerOfOrder(m.orderId);
   const chef = S.chefs.find(c => c.id === item.chefId) || null;
+  const who = (cu?.name || 'the reviewer').split(' ')[0];
   st.cur ??= 0; st.seen = Math.max(st.seen || 0, m.hunksSeen || 0);
   const total = m.hunks.length, all = st.seen >= total;
   const others = S.pass.filter(x => x !== id);
@@ -45,10 +46,11 @@ export function renderMeal(el, S, id) {
       <div class="fl-row"><span class="fl-seen${all ? ' all' : ''}" data-seen>${Math.min(st.seen, total)} of ${total} seen</span>
         <span class="fl-hints"><kbd>J</kbd> next <kbd>K</kbd> back</span>
         <button type="button" class="fl-btn ghost sm" data-step="-1" aria-label="Previous hunk">‹</button><button type="button" class="fl-btn ghost sm" data-step="1" aria-label="Next hunk">›</button></div>
-      ${F.you.canAct ? (item.status === 'approved' ? `<div class="fl-row"><span class="fl-ok">Approved. Serve it at Table ${(cu?.table ?? 0) + 1}.</span>${actBtn('Go to the table', null, null, '', `table:${cu?.table ?? 0}`)}</div>` : st.redo ? `
+      ${F.you.canAct ? (item.status === 'approved' ? `<div class="fl-row"><span class="fl-ok">Reviewed. It goes to ${esc(who)} with the rest of the ticket.</span></div>` : st.redo ? `
         <div class="fl-redo"><b>Send back: why?</b>${textStep(redoChips, st.reason, { keep: 'reason', placeholder: 'Tell the Chef what to fix', max: LIMITS.reason, name: 'why' })}
         <div class="fl-row">${actBtn('Send back for a Redo', 'redoMeal', { mealId: id }, 'bad', null, 'sendBack')}<button type="button" class="fl-btn ghost" data-cancel-redo>Cancel</button></div></div>` : `
-        <div class="fl-row fl-decide">${actBtn('Send back', null, null, 'bad', null, 'openRedo')}${actBtn(all ? 'Approve' : `Approve (read ${total - Math.min(st.seen, total)} more)`, 'approveMeal', { mealId: id }, 'ok', null, 'approve', !all)}</div>`) : viewOnly()}
+        ${all ? `<div class="fl-servenote"><b>Note for the reviewer</b> <small>(optional)</small>${textStep(S.chips?.serve || [], st.note, { keep: 'note', placeholder: 'What should the reviewer check?', max: LIMITS.note, name: 'note' })}</div>` : ''}
+        <div class="fl-row fl-decide">${actBtn('Send back', null, null, 'bad', null, 'openRedo')}${actBtn(all ? `Serve to ${esc(who)}` : `Read ${total - Math.min(st.seen, total)} more to serve`, 'serveMeal', { mealId: id }, 'ok', null, 'approve', !all)}</div>`) : viewOnly()}
       ${others.length ? `<div class="fl-others"><small>Also on the Pass:</small>${others.map(o => { const om = S.meals[o], oi = om && S.items[om.itemId]; return `<button type="button" class="fl-btn ghost sm" data-goto-panel="meal:${o}">${esc(stationDef(oi?.station).name)}${oi?.status === 'approved' ? ' ✓' : ''}</button>`; }).join('')}</div>` : ''}
     </div>`;
   // a Meal that is opened is a Meal being sampled
@@ -61,6 +63,7 @@ export function renderMeal(el, S, id) {
   el.querySelectorAll('[data-goto-panel]').forEach(b => b.onclick = () => openPanel(b.dataset.gotoPanel));
   const cancel = el.querySelector('[data-cancel-redo]'); if (cancel) cancel.onclick = () => { st.redo = false; openPanel(`meal:${id}`, { keepState: true, force: true }); };
   wireTextStep(el, redoChips, st, 'reason', 'why');
+  wireTextStep(el, S.chips?.serve || [], st, 'note', 'note');
   wireActs(el, {
     openRedo: () => { st.redo = true; openPanel(`meal:${id}`, { keepState: true, force: true }); },
     sendBack: async () => sendBack(id, st.reason),
@@ -94,8 +97,11 @@ export async function sendBack(id, reason) {
   if (r.ok) { panelState().redo = false; panelState().reason = ''; }
   return r;
 }
+/** Review done: approve the Meal and send it to its reviewer (it waits for the rest of its ticket if any is cooking). */
 export async function approve(id) {
-  const r = await doAct('approveMeal', { mealId: id });
+  const st = panelState();
+  const r = await doAct('serveMeal', { mealId: id, note: String(st.note || '').trim().slice(0, LIMITS.note) });
+  if (r.ok) st.note = '';
   return r;
 }
 /** Opens a Meal's review. */

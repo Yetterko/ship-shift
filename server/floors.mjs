@@ -1,15 +1,15 @@
 // FloorManager: every floor in memory, its number, name and plot, its lifetime, and the snapshot the wire sees.
 // A floor's public fields are the FloorSnapshot (shared/types.js); everything private sits under floor.priv and never leaves.
 import crypto from 'node:crypto';
-import { freshLine, CHIPS, CHEFS, FLOOR_NAMES } from '../content/orders.mjs';
+import { freshLine, CHIPS, CHEFS, FLOOR_NAMES, isPickedName } from '../content/orders.mjs';
 import { MODEL_LABEL, PLOTS, LIMITS } from '../shared/protocol.js';
-import { cleanName } from './building.mjs';
+
 
 /** Random 21-character floor ids (spec 7.6). */
 export const floorId = () => crypto.randomBytes(16).toString('base64url').slice(0, 21);
 export const newToken = () => crypto.randomBytes(24).toString('base64url');
 
-export const emptyStats = () => ({ shipped: 0, meals: 0, redos: 0, firstTime: 0, callBacks: 0, callBackMsTotal: 0, breakMs: 0, longestWorkMs: 0, patienceLost: 0, idlePenalty: 0 });
+export const emptyStats = () => ({ shipped: 0, meals: 0, redos: 0, firstTime: 0, callBacks: 0, callBackMsTotal: 0, breakMs: 0, breaksSkipped: 0, longestWorkMs: 0, patienceLost: 0, idlePenalty: 0 });
 
 export class FloorManager {
   /** @param {{config:object, now:()=>number, budget:import('./budget.mjs').Budget}} ctx */
@@ -43,7 +43,8 @@ export class FloorManager {
     const model = kind === 'showcase' || ownerRole === 'judge' ? config.models.judge : config.models.player;
     const floor = {
       id: floorId(), number: this.nextNumber++,
-      name: cleanName(name, LIMITS.floorName) || FLOOR_NAMES[this.namesUsed++ % FLOOR_NAMES.length],
+      // names are picked from the game's own lists, never free text: anything else gets a name from the list
+      name: isPickedName(name) ? name : FLOOR_NAMES[this.namesUsed++ % FLOOR_NAMES.length],
       plot: this.#freePlot(), kind, ownerRole, mode, timings: 'short',
       model, modelLabel: MODEL_LABEL[model] || model, keySource: 'house',
       budget: { spentUsd: 0, capUsd: this.ctx.budget.capFor({ kind, ownerRole }), blocked: false, canGoLive: false },

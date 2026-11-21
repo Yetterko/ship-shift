@@ -115,6 +115,25 @@ const HANDLERS = {
     floor.guide.review = true;
   },
 
+  /**
+   * The one-step review: approve a Meal at the Pass and send it to its reviewer. When the rest of the Order is still
+   * being cooked it waits, approved, and goes out with the last one; any notes travel together.
+   */
+  serveMeal(ctx, floor, { mealId, note }, now) {
+    const { meal, item } = onPass(floor, mealId);
+    if (meal.hunksSeen < meal.hunks.length) refuse('unread');
+    item.status = 'approved';
+    floor.guide.review = true;
+    const c = seatedCustomer(floor, item.customerId);
+    const notes = floor.priv.serveNotes ||= {};
+    const n = text(note, LIMITS.note);
+    if (n) notes[c.id] = [notes[c.id], n].filter(Boolean).join(' / ').slice(0, LIMITS.note);
+    const stillCooking = Object.values(floor.items).some(i => i.customerId === c.id && ['queued', 'cooking', 'ready', 'sampled'].includes(i.status));
+    if (stillCooking || !ORDERING.has(c.status)) return;
+    HANDLERS.serveOrder(ctx, floor, { customerId: c.id, note: notes[c.id] || '' }, now);
+    delete notes[c.id];
+  },
+
   serveOrder(ctx, floor, { customerId, mealIds, note }, now) {
     const c = seatedCustomer(floor, customerId);
     if (!ORDERING.has(c.status)) refuse('bad_state');
@@ -194,6 +213,14 @@ const HANDLERS = {
     if (!endBreak(ctx, floor, now)) refuse('not_eligible');
   },
 
+  /** The manual override: skip a forced break, or cut a break short. No rested bonus, and the report counts it. */
+  skipBreak(ctx, floor, args, now) {
+    if (floor.phase !== 'working') endBreak(ctx, floor, now);
+    else if (floor.mustBreakAt !== null) { floor.workStretchStartedAt = now; floor.priv.mustBreakWarned = false; }
+    else refuse('not_eligible');
+    floor.stats.breaksSkipped++;
+  },
+
   updateSettings(ctx, floor, args) {
     const s = { ...floor.settings };
     for (const k of ['gracePeriodMs', 'maxWorkMs']) if (args?.[k] !== undefined) s[k] = Number(args[k]);
@@ -254,8 +281,8 @@ export function runAction(ctx, conn, name, args = {}) {
     const now = ctx.now();
     if (floor.shift.status !== 'running' && !ANY_TIME.has(name)) refuse('shift_over');
     updateDerived(ctx, floor, now);
-    if (floor.mustBreak && !['startBreak', 'leave', 'closeShift', 'setMode'].includes(name)) refuse('must_break');
-    if (floor.phase !== 'working' && !['endBreak', 'startBreak', 'leave', 'updateSettings', 'setMode', 'closeShift'].includes(name)) endBreak(ctx, floor, now);
+    if (floor.mustBreak && !['startBreak', 'skipBreak', 'leave', 'closeShift', 'setMode'].includes(name)) refuse('must_break');
+    if (floor.phase !== 'working' && !['endBreak', 'skipBreak', 'startBreak', 'leave', 'updateSettings', 'setMode', 'closeShift'].includes(name)) endBreak(ctx, floor, now);
     HANDLERS[name](ctx, floor, args && typeof args === 'object' ? args : {}, now, conn);
     if (!floor.priv.destroyed) {
       if (floor.shift.status === 'running') dispatch(ctx, floor, now);   // an idle Chef takes a new ticket at once

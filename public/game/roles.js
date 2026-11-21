@@ -11,9 +11,9 @@ import { net, request, send, on, buildingReady } from './net.js';
 let host = null, go = null, layer = null, queued = false, busyRole = null;
 export const roles = { get queued() { return queued; } };
 
-const NAMES_A = ['Hungry', 'Sleepy', 'Flaky', 'Greedy', 'Merry', 'Tidy', 'Rusty', 'Sunny', 'Salty', 'Crispy', 'Lucky', 'Nimble'];
-const NAMES_B = ['Linter', 'Compiler', 'Rebase', 'Hotfix', 'Pipeline', 'Semicolon', 'Cache', 'Diff', 'Merge', 'Stack', 'Kernel', 'Refactor'];
-export const randomName = () => `The ${NAMES_A[Math.floor(Math.random() * NAMES_A.length)]} ${NAMES_B[Math.floor(Math.random() * NAMES_B.length)]}`;
+import { randomFloorName } from '/content/orders.mjs';
+// Restaurant names are picked, never typed: the town is public. The server refuses any name not from its own lists.
+export const randomName = randomFloorName;
 
 export function initRoles(opts) {
   host = opts.shell; go = opts.go;
@@ -130,7 +130,7 @@ export function showChalkboard({ mode = 'live' } = {}) {
     <form class="sh-board" novalidate>
       <h2>Kitchen setup</h2>
       <label class="row"><span>Restaurant name</span>
-        <span class="nm"><input id="cbName" maxlength="24" autocomplete="off" spellcheck="false" value="${esc(randomName())}"><button type="button" class="dice" id="cbDice" title="Another name" aria-label="Another name">↻</button></span></label>
+        <span class="nm"><output id="cbName" class="picked" aria-live="polite">${esc(randomName())}</output><button type="button" class="dice" id="cbDice" title="Another name" aria-label="Another name">↻</button></span><small>Names are picked for you. Tap ↻ for another.</small></label>
       <label class="row"><span>Grace period <b id="cbGraceV"></b></span>
         <input type="range" id="cbGrace" min="${R.g[0]}" max="${R.g[1]}" step="${stepOf(R.g[1])}" value="${R.g[2]}">
         <small>No call-back reaches you this soon after a break starts.</small></label>
@@ -146,12 +146,12 @@ export function showChalkboard({ mode = 'live' } = {}) {
   const q = id => el.querySelector(`#${id}`);
   const show = () => { q('cbGraceV').textContent = human(Number(q('cbGrace').value)); q('cbWorkV').textContent = human(Number(q('cbWork').value)); };
   q('cbGrace').oninput = show; q('cbWork').oninput = show; show();
-  q('cbDice').onclick = () => { q('cbName').value = randomName(); };
+  q('cbDice').onclick = () => { q('cbName').textContent = randomName(); };
   q('cbBack').onclick = () => showLanding();
   el.querySelector('form').onsubmit = async e => {
     e.preventDefault();
     q('cbGo').disabled = true; q('cbGo').textContent = 'Opening…';
-    const name = q('cbName').value.trim().slice(0, 24) || randomName();
+    const name = q('cbName').textContent.trim() || randomName();
     const res = await request('createFloor', { name, mode, settings: { gracePeriodMs: Number(q('cbGrace').value), maxWorkMs: Number(q('cbWork').value) } });
     if (res.type === 'error') {
       if (res.code === 'no_slot') { showBusy(res.options || ['demo', 'visit', 'queue']); return; }

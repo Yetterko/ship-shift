@@ -234,12 +234,19 @@ initRoles({ shell, go: { overview: () => { unmount(); showOv(); }, home: () => g
 initOverview({ shell, walkIn: id => travel({ floorId: id }), toPark: () => travel({ park: true }), toLanding, goHome, openMenu: openDrawer });
 initTeleport({ shell, hooks: { unmount, mountFloor, mountPark, showOverview: showOv, toLanding, where: () => ({ view: state.view, floorId: state.floorId }) } });
 initSquirt({
-  // never in your own kitchen: only in the park, or in a restaurant you are visiting
-  where: () => (state.mounted === 'park' ? 'park' : state.mounted === 'floor' && state.floorId !== net.homeId && !teleport.busy ? 'visit' : 'off'),
+  // the park and other restaurants are fair game; your own kitchen is "home", where the gun only works once you are hit
+  where: () => (teleport.busy ? 'off' : state.mounted === 'park' ? 'park' : state.mounted === 'floor' ? (state.floorId !== net.homeId ? 'visit' : 'home') : 'off'),
   me: () => (state.mounted === 'park' ? parkm.me : state.mounted === 'floor' ? floorMe : null),
   peers: () => (state.mounted === 'park' ? peerList() : floorPeerList),
   sceneOf: () => (state.mounted === 'park' ? parkm.parkScene : state.mounted === 'floor' ? kitchenScene : null),
+  // hit in your own kitchen: the water gun button comes out above the controls, for as long as you may fire back
+  onArmed: ms => {
+    toast('Splashed! Fire back with F or the water gun for 30 s.');
+    const b = squirtButton(true); b.classList.add('home'); document.body.append(b);
+    clearTimeout(armedT); armedT = setTimeout(() => { if (state.mounted !== 'park') squirtButton(false); }, ms);
+  },
 });
+let armedT = 0;
 initPill({ shell, becomeVisitor: async () => { const r = await act('leave', {}); if (r.ok || r.code === 'no_floor') netm.forgetHome(); await travel({ overview: true }); } });
 
 let booted = false;

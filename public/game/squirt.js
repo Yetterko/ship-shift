@@ -1,4 +1,5 @@
-// The water gun: spray another visitor in the park, or in a restaurant you are visiting. Never in your own kitchen.
+// The water gun: spray another visitor in the park, or in a restaurant you are visiting. In your own kitchen it stays
+// holstered until someone splashes you there: then you can fire back for a short while.
 //
 //   initSquirt({ where, me, peers, sceneOf })   where() -> 'park' | 'visit' | 'off'; me() -> { x, z, r } or null;
 //                                              peers() -> [{ id, name, x, z }]; sceneOf() -> the THREE scene on screen
@@ -13,19 +14,23 @@ import { THREE } from './scene.js';
 import { esc, reduceMotion, modal } from './core.js';
 import { send, on, net } from './net.js';
 
+const ARMED_MS = 30_000;   // how long a splash at home lets you fire back
+let armedUntil = 0;
+/** Whether the gun can fire where I am now: never off-scene; at home only after being splashed there. */
+export function canFire() { const w = opt?.where(); return w === 'park' || w === 'visit' || (w === 'home' && performance.now() < armedUntil); }
 const RANGE = 5.8, CONE = Math.cos(Math.PI * 0.4), COOL_MS = 1000, FLIGHT = 0.45;   // the server drops shots past 6 units, and more than 1 a second
 let opt = null, btn = null, lastShot = 0;
 const drops = [];           // { m, from, to, t, life, kind }
 const dripGeo = new THREE.SphereGeometry(0.07, 8, 6);
 const waterMat = new THREE.MeshBasicMaterial({ color: '#5fb4e6', transparent: true, opacity: 0.9 });
-export const squirt = { shots: 0, hits: 0, splats: 0, drips: 0, last: null };
+export const squirt = { shots: 0, hits: 0, splats: 0, drips: 0, armed: 0, last: null };
 
 export function initSquirt(o) {
   opt = o;
   addEventListener('keydown', e => {
     if (e.key !== 'f' && e.key !== 'F') return;
     if (e.ctrlKey || e.metaKey || e.altKey || modal() || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName || '') || e.target?.isContentEditable) return;
-    if (opt.where() === 'off') return;
+    if (!canFire()) return;
     e.preventDefault(); fire();
   });
   on('splashed', m => splashed(m));
@@ -47,7 +52,7 @@ export function aim() {
 }
 
 export function fire() {
-  if (!opt || opt.where() === 'off') return false;
+  if (!opt || !canFire()) return false;
   const now = performance.now();
   if (now - lastShot < COOL_MS) return false;
   lastShot = now;
@@ -105,7 +110,11 @@ function splashed(m) {
   const src = at(m.fromId) || (dst && m.dir ? { x: dst.x - m.dir.x * 3, z: dst.z - m.dir.z * 3 } : null);
   if (src && dst) arc(src, dst);
   if (dst) { squirt.drips++; setTimeout(() => drip(dst), FLIGHT * 1000); }   // everyone in the zone sees the target drip
-  if (toId === self) splat({ fromName: m.from }, src, me);
+  if (toId === self) {
+    splat({ fromName: m.from }, src, me);
+    // splashed in your own kitchen: the gun comes out, for a while, so you can answer back
+    if (opt.where() === 'home') { armedUntil = performance.now() + ARMED_MS; squirt.armed++; opt.onArmed?.(ARMED_MS); }
+  }
 }
 function splat(m, src, me) {
   squirt.splats++;

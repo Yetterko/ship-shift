@@ -14,8 +14,8 @@ export const ROLES = ['spectator', 'player', 'judge'];
 export const MODES = ['live', 'demo'];
 
 export const ACTIONS = [
-  'seat', 'saveItems', 'sendItems', 'sampleMeal', 'seeHunk', 'redoMeal', 'approveMeal', 'serveOrder',
-  'readFeedback', 'moreWork', 'giveBill', 'startBreak', 'endBreak', 'updateSettings', 'setMode',
+  'seat', 'saveItems', 'sendItems', 'sampleMeal', 'seeHunk', 'redoMeal', 'approveMeal', 'serveMeal', 'serveOrder',
+  'readFeedback', 'moreWork', 'giveBill', 'startBreak', 'endBreak', 'skipBreak', 'updateSettings', 'setMode',
   'closeShift', 'playAgain', 'leave',
 ];
 export const NOTIFY = ['mealReady', 'feedbackReady', 'callBack', 'burnt', 'stoveWait', 'budgetSpent', 'slotFree', 'mustBreak', 'shipped', 'floorClosed', 'liveOff'];

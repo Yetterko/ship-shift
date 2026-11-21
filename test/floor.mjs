@@ -58,11 +58,11 @@ try {
   const acts = () => page.evaluate(() => window.__harness.acts.map(a => a.name));
   ok((await acts()).includes('sampleMeal'), 'opening a fresh Meal samples it');
   const hunks = await page.locator('#flPanel .fl-hunk').count();
-  ok(await page.locator('#flPanel button', { hasText: 'Approve' }).isDisabled(), 'Approve is shut before every hunk is seen');
+  ok(await page.locator('#flPanel button', { hasText: /serve/i }).isDisabled(), 'Serve is shut before every hunk is seen');
   await page.keyboard.press('j'); await page.waitForTimeout(80);
   ok(await page.locator('#flPanel .fl-seen').innerText() === `2 of ${hunks} seen`, `J steps on: "2 of ${hunks} seen"`);
   await page.keyboard.press('k'); await page.keyboard.press('j'); await page.keyboard.press('j'); await page.waitForTimeout(100);
-  ok(!(await page.locator('#flPanel button', { hasText: 'Approve' }).isDisabled()), 'Approve opens once all are seen');
+  ok(!(await page.locator('#flPanel button', { hasText: /serve/i }).isDisabled()), 'Serve opens once all are seen');
   await page.locator('#flPanel button', { hasText: 'Send back' }).click();
   await page.locator('#flPanel [data-why]').first().click();
   await page.locator('#flPanel button', { hasText: 'Send back for a Redo' }).click(); await page.waitForTimeout(100);
@@ -90,7 +90,7 @@ try {
   const wpos = await page.evaluate(() => { const p = window.__floor.F.waiter.g.position; return { x: p.x, z: p.z }; });
   ok(wpos.x > 4, 'a visitor starts at the front door');
   await page.evaluate(() => window.__floor.tap('pass')); await page.waitForTimeout(200);
-  ok(await page.locator('#flPanel .fl-viewonly').count() >= 1 && await page.locator('#flPanel button', { hasText: 'Approve' }).count() === 0, 'a visitor sees "View only" instead of Approve');
+  ok(await page.locator('#flPanel .fl-viewonly').count() >= 1 && await page.locator('#flPanel button', { hasText: /serve/i }).count() === 0, 'a visitor sees "View only" instead of Serve');
   ok(await page.locator('#flWatch').isVisible(), 'the eye icon shows the watcher count');
   await openHarness(page, harness.url, 'stage=shipped');
   ok(await page.evaluate(() => window.__floor.F.snap.tv.shots[0] === 'o1'), 'the TV knows Order 1 shipped');

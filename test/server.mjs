@@ -1,6 +1,7 @@
 // Server core tests: the skeleton over a real socket, then floors, roles, actions, the loop, the Pomodoro layer and
 // scoring against an injected clock. Headless, no browser, no API (`node test/server.mjs`).
 import { test } from 'node:test';
+import { isPickedName } from '../content/orders.mjs';
 import assert from 'node:assert/strict';
 import { startServer, wsClient } from './helpers/server.mjs';
 import { loadConfig } from '../server/config.mjs';
@@ -83,13 +84,14 @@ test('skeleton: /health, /healthz, static, /shared, hello → welcome, subscribe
     assert.equal(w.limits.items, 5);
     c.send('chooseRole', { role: 'player' });
     await c.next('welcome', m => m.role === 'player');
-    c.send('createFloor', { name: 'Test Kitchen' });
+    c.send('createFloor', { name: 'Typed Free Text' });
     const made = await c.next('welcome', m => m.floorId);
     assert.ok(made.token);
     c.send('subscribe', { floorId: made.floorId });
     const fm = await c.next('floor');
     assert.equal(fm.floor.mode, 'demo', 'no key: every floor is Demo');
-    assert.equal(fm.floor.name, 'Test Kitchen');
+    assert.notEqual(fm.floor.name, 'Typed Free Text', 'a typed name is never used: names come from the game lists');
+    assert.ok(isPickedName(fm.floor.name), 'the floor gets a picked name instead');
     assert.deepEqual(fm.you, { isOwner: true, canAct: true });
     assert.equal(fm.floor.line.length, 5);
     assert.ok(!JSON.stringify(fm).includes(made.token), 'the snapshot never holds the token');

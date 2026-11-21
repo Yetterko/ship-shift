@@ -98,3 +98,15 @@ export function freshLine() {
     order: { ...c.order, acceptanceCriteria: [...c.order.acceptanceCriteria], quickPicks: c.order.quickPicks.map(q => ({ ...q })), itemIds: [] },
   }));
 }
+
+// Restaurant names are picked, never typed: the town is public, so every name comes from these two lists.
+export const NAME_A = ['Hungry', 'Sleepy', 'Flaky', 'Greedy', 'Merry', 'Tidy', 'Rusty', 'Sunny', 'Salty', 'Crispy', 'Lucky', 'Nimble'];
+export const NAME_B = ['Linter', 'Compiler', 'Rebase', 'Hotfix', 'Pipeline', 'Semicolon', 'Cache', 'Diff', 'Merge', 'Stack', 'Kernel', 'Refactor'];
+export const randomFloorName = () => `The ${NAME_A[Math.floor(Math.random() * NAME_A.length)]} ${NAME_B[Math.floor(Math.random() * NAME_B.length)]}`;
+/** True only for a name the game itself generates: a fixed name, or "The <A> <B>" from the lists above. */
+export function isPickedName(name) {
+  if (typeof name !== 'string') return false;
+  if (FLOOR_NAMES.includes(name)) return true;
+  const m = /^The (w+) (w+)$/.exec(name);
+  return !!m && NAME_A.includes(m[1]) && NAME_B.includes(m[2]);
+}

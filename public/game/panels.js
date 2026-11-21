@@ -180,7 +180,7 @@ const PANELS = {
       const t = +id, c = S.tables[t], st = panelState();
       if (!c) {
         if (st.receipt) return receipt(el, st.receipt, t, S);
-        el.innerHTML = `<div class="fl-head"><small>Table ${t + 1}</small><h2>A free table</h2></div><div class="fl-body"><p>Seat a Customer from the line to start their Order.</p></div>
+        el.innerHTML = `<div class="fl-head"><small>Table ${t + 1}</small><h2>A free table</h2></div><div class="fl-body"><p>Seat a reviewer from the line to pick up their ticket.</p></div>
           <div class="fl-foot">${S.line.length ? actBtn(`Seat ${esc(S.line[0].name)}`, null, null, 'ok', null, 'seatNext') : '<span>The line is empty.</span>'}</div>`;
         wireActs(el, { seatNext: async () => { await doAct('seat', { customerId: S.line[0].id, table: t }); } });
         return;
@@ -198,8 +198,8 @@ const PANELS = {
   passlist: {
     sig: S => S.pass.map(id => `${id}:${S.items[S.meals[id]?.itemId]?.status}`).join(),
     render(el, S) {
-      el.innerHTML = `<div class="fl-head"><small>The Pass · review before it goes out</small><h2>${S.pass.length ? `${S.pass.length} on the Pass` : 'Nothing on the Pass'}</h2></div>
-        <div class="fl-body">${S.pass.length ? `<ol class="fl-list">${S.pass.map(mid => { const m = S.meals[mid], it = S.items[m.itemId], cu = customerById(it?.customerId); return `<li><button type="button" class="fl-rowbtn" data-goto-panel="meal:${mid}"><span class="fl-st on st-${it?.station}">${esc(stationDef(it?.station).name)}</span><b>${esc(it?.status === 'approved' ? 'Approved' : 'To sample')}</b><small>Table ${(cu?.table ?? 0) + 1} · ${esc(cu?.name || '')}</small></button></li>`; }).join('')}</ol><p>Approved Meals wait here until you serve them at their table.</p>` : '<p>Chefs put finished Meals here. You sample each one before a Customer sees it.</p>'}</div>`;
+      el.innerHTML = `<div class="fl-head"><small>The Pass · code review before it reaches the reviewer</small><h2>${S.pass.length ? `${S.pass.length} on the Pass` : 'Nothing on the Pass'}</h2></div>
+        <div class="fl-body">${S.pass.length ? `<ol class="fl-list">${S.pass.map(mid => { const m = S.meals[mid], it = S.items[m.itemId], cu = customerById(it?.customerId); return `<li><button type="button" class="fl-rowbtn" data-goto-panel="meal:${mid}"><span class="fl-st on st-${it?.station}">${esc(stationDef(it?.station).name)}</span><b>${esc(it?.status === 'approved' ? 'Served, waiting for the rest' : 'To review')}</b><small>Table ${(cu?.table ?? 0) + 1} · ${esc(cu?.name || '')}</small></button></li>`; }).join('')}</ol><p>A served change waits here until the rest of its ticket is reviewed.</p>` : '<p>Agents put finished diffs here. You review each one before the reviewer sees it.</p>'}</div>`;
     },
   },
   meal: { sig: mealSig, render: renderMeal },
@@ -211,7 +211,7 @@ const PANELS = {
       const row = (it, word) => `<li class="fl-ticket st-${it.station}"><span class="fl-st on st-${it.station}">${esc(STATION_LABEL[it.station])}</span><p>${esc(it.prompt)}</p><small>${esc(word)}${it.redoCount ? ` · redo ${it.redoCount}: ${esc(it.redoReason || '')}` : ''}</small></li>`;
       const busy = Object.values(S.items).filter(i => ['cooking', 'waiting_stove', 'burnt'].includes(i.status));
       el.innerHTML = `<div class="fl-head"><small>Ticket rail · the Ready Queue</small><h2>${S.readyQueue.length} waiting for a Chef</h2></div>
-        <div class="fl-body"><p>Oldest first. A free Chef takes the next ticket automatically.</p>
+        <div class="fl-body"><p>Oldest first. A free agent takes the next task automatically.</p>
         <ol class="fl-list">${S.readyQueue.map((iid, n) => row(S.items[iid], n === 0 ? 'next up' : `${n + 1} in queue`)).join('') || '<li class="fl-empty">No tickets waiting.</li>'}</ol>
         ${busy.length ? `<h3>With the Chefs</h3><ol class="fl-list">${busy.map(i => row(i, itemStatusWord[i.status])).join('')}</ol>` : ''}</div>`;
     },
@@ -236,7 +236,7 @@ const PANELS = {
       const c = S.chefs.find(x => x.id === id); if (!c) { el.innerHTML = '<p>No such Chef.</p>'; return; }
       const item = c.itemId ? S.items[c.itemId] : null;
       el.innerHTML = `<div class="fl-head"><small>Chef · ${esc(c.modelLabel)}</small><h2>${esc(c.name)}</h2></div>
-        <div class="fl-body"><p class="fl-big">${esc(chefWords(c, S))}</p>${item ? `<div class="fl-summary"><b>${esc(STATION_LABEL[item.station])} ticket</b><p>${esc(item.prompt)}</p>${progress(item)}</div>` : '<p>Idle Chefs take the oldest ticket on the rail by themselves.</p>'}
+        <div class="fl-body"><p class="fl-big">${esc(chefWords(c, S))}</p>${item ? `<div class="fl-summary"><b>${esc(STATION_LABEL[item.station])} ticket</b><p>${esc(item.prompt)}</p>${progress(item)}</div>` : '<p>Idle agents take the oldest task on the rail by themselves.</p>'}
         ${c.status === 'waiting_stove' ? '<p class="fl-note">Waiting for a stove: the server is at its limit of model calls in flight. This time never counts against you.</p>' : ''}
         ${c.thought ? `<p><i>${esc(c.thought)}</i></p>` : ''}</div>`;
     },
@@ -247,8 +247,8 @@ const PANELS = {
     sig: S => `${S.shift.status}`,
     render(el, S) {
       el.innerHTML = `<div class="fl-head"><small>How to play</small><h2>Run the pass</h2></div>
-        <div class="fl-body"><ol class="fl-loop"><li><b>Seat</b> a Customer from the line on the left.</li><li><b>Split</b> their Order into Items at the table, one Station each.</li><li><b>Review</b> each Meal at the Pass, hunk by hunk. Approve or send it back.</li><li><b>Serve</b> the approved Meals with a note.</li><li><b>Ship</b> it with the Bill once the Customer is happy.</li></ol>
-        <p>When both Chefs are cooking you may <b>take a break</b>. You are called back after your grace period.</p>
+        <div class="fl-body"><ol class="fl-loop"><li><b>Pick</b> a ticket: each Customer is a reviewer agent with a ticket, like a GitHub issue.</li><li><b>Delegate</b> it as tasks, one Station each (Frontend, Backend, Database, Integration). Chefs are your coding agents.</li><li><b>Review</b> each finished diff at the Pass, hunk by hunk. Serve it, or send it back with what to fix.</li><li><b>Hand off</b>: once every change is served, the reviewer checks it against the ticket.</li><li><b>Ship</b> it with the Bill when the reviewer is happy.</li></ol>
+        <p>When both agents are working you may <b>take a break</b>. You are called back after your grace period.</p>
         <dl class="fl-keys"><dt>WASD / click</dt><dd>walk</dd><dt>E</dt><dd>use what is near</dd><dt>Shift</dt><dd>dash</dd><dt>Tab</dt><dd>the most urgent thing</dd><dt>T</dt><dd>Type it</dd><dt>J / K</dt><dd>next / previous hunk</dd><dt>P</dt><dd>presenter mode</dd><dt>Esc</dt><dd>close</dd></dl></div>
         <div class="fl-foot"><div class="fl-row">${S.shift.status === 'running' ? actBtn('Close up for the day', 'closeShift', {}, 'bad') : ''}<button type="button" class="fl-btn ghost" data-sound>${isMuted() ? 'Sound on' : 'Sound off'}</button><button type="button" class="fl-btn ghost" data-presenter>Presenter mode <kbd>P</kbd></button></div></div>`;
       el.querySelector('[data-presenter]').onclick = () => emit('presenter');
@@ -318,7 +318,7 @@ async function sendItems(c, st, t) {
   if (!st.drafts.length) { toast(CODES.no_items, 'bad'); return; }
   const r = await saveDrafts(c, st); if (!r.ok) return;
   const s = await doAct('sendItems', { customerId: c.id });
-  if (s.ok) { st.drafts = []; st.dirty = false; st.more = false; st.typing = false; emit('sfx', 'clink'); toast('Order in! Tickets are on the rail.', ''); closePanel(); }
+  if (s.ok) { st.drafts = []; st.dirty = false; st.more = false; st.typing = false; emit('sfx', 'clink'); toast('Delegated! Tasks are on the rail.', ''); closePanel(); }
 }
 function saveDraftsOnClose(key) {
   const st = P.states.get(key); if (!st?.dirty || !key.startsWith('table:') || !F.you.canAct) return;

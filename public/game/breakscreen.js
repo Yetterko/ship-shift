@@ -15,8 +15,11 @@ export function initBreak(ui) {
     <div class="fl-cup" aria-hidden="true"><i></i><i></i><i></i><b></b></div>
     <small class="fl-break-kind"></small><h2 class="fl-break-title"></h2>
     <p class="fl-break-time"></p><p class="fl-break-info"></p>
-    <button type="button" class="fl-btn ok big fl-break-go"></button></div>`;
+    <button type="button" class="fl-btn ok big fl-break-go"></button>
+    <button type="button" class="fl-btn ghost fl-break-skip">Skip break</button></div>`;
   el.querySelector('.fl-break-go').onclick = () => (B.mode === 'must' ? takeBreak() : backToWork());
+  // The manual override: nobody is made to wait out a break. No rested bonus, and the shift report counts it.
+  el.querySelector('.fl-break-skip').onclick = () => skipBreak();
   ui.append(el); B.el = el; B.mode = null; B.warned = false;
 }
 export function disposeBreak() { B.el?.remove(); B.el = null; document.body.classList.remove('fl-onbreak'); }
@@ -29,6 +32,7 @@ export async function takeBreak() {
   return r;
 }
 export async function backToWork() { return doAct('endBreak', {}); }
+export async function skipBreak() { const r = await doAct('skipBreak', {}); if (r?.ok) toast('Break skipped. No rested bonus this time.'); return r; }
 
 /** Shows, updates or hides the break screen. Called on every snapshot and every frame (for the time). */
 export function showBreak(S = F.snap) {
@@ -56,6 +60,7 @@ export function showBreak(S = F.snap) {
     q('.fl-break-time').textContent = `You have worked ${mmss(t - S.workStretchStartedAt)} without a break.`;
     q('.fl-break-info').textContent = 'The kitchen keeps cooking while you rest. Everything else waits until you take it.';
     q('.fl-break-go').textContent = 'Take a break';
+    q('.fl-break-skip').hidden = false; q('.fl-break-skip').textContent = 'Skip break and keep working';
   } else {
     const grace = S.callBack?.graceEndsAt, held = grace && grace > t;
     q('.fl-break-kind').textContent = mode === 'called' ? 'Call-back' : 'On a break';
@@ -66,6 +71,8 @@ export function showBreak(S = F.snap) {
       : `${cooking} Chef${cooking === 1 ? '' : 's'} still working. ${held ? `Call-backs are held for ${mmss(grace - t)}.` : waiting ? 'Something is ready: calling you back shortly.' : "We'll call you back when something is ready."}`;
     q('.fl-break-go').textContent = 'Back to work';
     q('.fl-break-go').hidden = !owner;
+    // during a break, Back to work already ends it; the skip only shows on the compulsory screen
+    q('.fl-break-skip').hidden = true;
   }
 }
 function callLine(S) {

@@ -120,15 +120,15 @@ export async function playPriya(page, ok, { shots = null } = {}) {
   ok(edited, 'the inline edit reached the server');
   await page.waitForTimeout(700);
   await shot('03-cooking');
-  // review each Meal: every hunk, then Approve
+  // review each Meal: every hunk, then Serve it to the reviewer (the last one carries a note chip)
   for (let n = 0; n < 2; n++) {
     await waitSnap(page, S => S.pass.some(id => ['ready', 'sampled'].includes(S.items[S.meals[id].itemId].status)), null, 60000, 'a Meal on the Pass');
     await tapThing(page, 'pass');
     await page.waitForFunction(() => window.__floor.panel()?.startsWith('meal:'), null, { timeout: 5000 });
-    const approve = page.locator('#flPanel button', { hasText: 'Approve' }).first();
+    const approve = page.locator('#flPanel .fl-decide button', { hasText: /serve/i }).first();
     await approve.waitFor();
     const total = await page.locator('#flPanel .fl-hunk').count();
-    if (total > 1) ok(await approve.isDisabled(), `Approve waits until all ${total} hunks are seen`);
+    if (total > 1) ok(await approve.isDisabled(), `Serve waits until all ${total} hunks are seen`);
     for (let i = 0; i < total + 1; i++) {
       if (await page.locator('#flPanel .fl-seen.all').count()) break;
       const next = page.locator('#flPanel [data-step="1"]');
@@ -136,20 +136,17 @@ export async function playPriya(page, ok, { shots = null } = {}) {
     }
     ok(await page.locator('#flPanel .fl-seen').innerText() === `${total} of ${total} seen`, `the counter reads ${total} of ${total} seen`);
     if (n === 0) await shot('04-review');
-    await panelButton(page, 'Approve');
+    if (n === 1) {
+      await page.locator('#flPanel [data-note]').first().waitFor();
+      await tapEl(page.locator('#flPanel [data-note]').first());
+      ok((await page.locator('#flPanel [data-note-box]').inputValue()).length > 3, 'a note chip fills the note for the reviewer');
+    }
+    await tapEl(approve);
     await page.waitForTimeout(300);
   }
-  await waitSnap(page, (S, id) => S.tables.find(t => t?.id === id)?.order.itemIds.filter(i => S.items[i]?.status === 'approved').length === 2, c1, 8000, 'both Meals approved');
-  ok(true, 'both Meals approved');
-  // serve with a note chip
   const table = await page.evaluate(id => window.__floor.F.snap.tables.findIndex(t => t?.id === id), c1);
-  await tapThing(page, `table:${table}`);
-  await page.locator('#flPanel [data-note]').first().waitFor();
-  await tapEl(page.locator('#flPanel [data-note]').first());
-  ok((await page.locator('#flPanel [data-note-box]').inputValue()).length > 3, 'a serve-note chip fills the note');
-  await panelButton(page, 'Serve');
-  await waitSnap(page, (S, id) => ['eating', 'awaiting_player'].includes(S.tables.find(t => t?.id === id)?.status), c1, 8000, 'Priya to start eating');
-  ok(true, 'Serve sends the Meals to the Customer');
+  await waitSnap(page, (S, id) => ['eating', 'awaiting_player'].includes(S.tables.find(t => t?.id === id)?.status), c1, 8000, 'Priya to start reviewing');
+  ok(true, 'serving the last reviewed change sends the whole ticket to the reviewer');
   // feedback, then the bill
   await waitSnap(page, (S, id) => S.tables.find(t => t?.id === id)?.status === 'awaiting_player', c1, 40000, 'Feedback');
   await page.evaluate(() => window.__floor.close());
